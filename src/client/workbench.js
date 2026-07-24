@@ -518,7 +518,7 @@ class SqlWorkbench extends LitElement {
             @click=${() => this._run(false)}>${this._busy ? "Running…" : "Run"}</button>
           ${this._canWrite && this._result?.mode === "write" && !this._result.committed
             ? html`<button class="btn commit" @click=${() => this._run(true)}
-                title="Re-run this statement and COMMIT the change">Commit change</button>`
+                title="Re-run this statement and COMMIT the change">Run and Commit Change</button>`
             : ""}
           <button class="btn" ?disabled=${!this._isSql || !tab.sql?.trim()}
             @click=${() => this._saveSnippet()}>Save snippet</button>

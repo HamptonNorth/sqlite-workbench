@@ -4,7 +4,9 @@ node_modules/
 # logs
 *.log
 
-# SQLite databases (target DBs, sidecars, snapshots) — never commit data
+# SQLite databases (target DBs, sidecars, snapshots) — never commit data.
+# Dev/scratch DBs live in ./data by convention; the dir is tracked (.gitkeep)
+# but its contents are not.
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
@@ -12,6 +14,9 @@ node_modules/
 *.db-wal
 *.db-shm
 sql-snapshots/
+data/*
+!data/.gitkeep
+!data/README.md
 
 # build output
 dist/

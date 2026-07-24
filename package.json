@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "bun run bin/cli.js",
+    "dev": "bun --hot bin/cli.js",
     "test": "bun test test/"
   },
   "engines": {

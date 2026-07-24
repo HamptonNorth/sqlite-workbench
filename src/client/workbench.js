@@ -28,6 +28,13 @@ const MAX_CELL = 40;
 // the server's 1000-row cap, so a browse shows a complete result.
 const BROWSE_LIMIT = 500;
 
+// Shell-quote an argument so a copied command works even when a project name has
+// spaces or parens (e.g. "aph2 test (nuc2023)"). Mirrors scripts/remote.js.
+function shQuote(a) {
+  const s = String(a);
+  return /[^A-Za-z0-9_@%+=:,./-]/.test(s) ? `'${s.replace(/'/g, "'\\''")}'` : s;
+}
+
 // ---- CSV / text export -----------------------------------------------------
 function csvCell(v) {
   const s = v === null || v === undefined ? "" : String(v);
@@ -551,12 +558,46 @@ class SqlWorkbench extends LitElement {
     `;
   }
 
+  // A dark command block with a Copy button, like a fenced code block.
+  _cmdBlock(text) {
+    return html`
+      <div class="cmdwrap">
+        <pre class="cmd">${text}</pre>
+        <button class="copybtn" title="Copy to clipboard" @click=${(e) => this._copy(text, e)}>Copy</button>
+      </div>
+    `;
+  }
+
+  async _copy(text, ev) {
+    const btn = ev.currentTarget;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch { ok = false; }
+    if (!ok) {
+      // Fallback for non-secure contexts / older browsers.
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        this.renderRoot.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        ta.remove();
+      } catch { ok = false; }
+    }
+    const prev = btn.textContent;
+    btn.textContent = ok ? "Copied!" : "Copy failed";
+    btn.classList.toggle("ok", ok);
+    setTimeout(() => { btn.textContent = prev; btn.classList.remove("ok"); }, 1200);
+  }
+
   _renderProjectInfo() {
     const p = this._projectInfo;
     if (!p) return "";
+    const arg = shQuote(p.name);
     return html`
       <div class="modal" @click=${() => { this._projectInfo = null; }}>
-        <div class="dialog" @click=${(e) => e.stopPropagation()}>
+        <div class="dialog project" @click=${(e) => e.stopPropagation()}>
           <div class="dhead">
             <h3>${p.name} — remote project</h3>
             <span class="spacer"></span>
@@ -568,10 +609,10 @@ class SqlWorkbench extends LitElement {
             }. The workbench can't open it directly — use the support scripts, which stop the
             service, work on a copy locally with guard rails, and put it back.</p>
             <p class="cmdlabel">Investigate (read-only):</p>
-            <pre class="cmd">bun run scripts/remote.js investigate ${p.name}</pre>
+            ${this._cmdBlock(`bun run scripts/remote.js investigate ${arg}`)}
             <p class="cmdlabel">Edit (stop → download → edit → verify → upload → restart):</p>
-            <pre class="cmd">bun run scripts/remote.js edit ${p.name}</pre>
-            <p class="muted">Full runbook: <code>docs/OPERATIONS.md</code>.</p>
+            ${this._cmdBlock(`bun run scripts/remote.js edit ${arg}`)}
+            <p class="muted foot">Full runbook: <code>docs/OPERATIONS.md</code>.</p>
           </div>
         </div>
       </div>
@@ -747,9 +788,15 @@ class SqlWorkbench extends LitElement {
     .connect select { font: inherit; font-size: 13px; color: var(--ink); padding: 3px 6px;
       border: 1px solid var(--border-strong); border-radius: 6px; background: #fff; max-width: 22rem; }
     .connect select:focus { outline: none; border-color: #64748b; }
-    .cmdlabel { margin: 0.6rem 0 0.2rem; font-size: 13px; }
-    .cmd { margin: 0 0 0.2rem; padding: 8px 10px; background: var(--slate); color: #f1f5f9;
+    .cmdlabel { margin: 1.1rem 0 0.4rem; font-size: 13px; }
+    .cmdwrap { position: relative; margin: 0; }
+    .cmd { margin: 0; padding: 12px 14px; padding-right: 4.5rem; background: var(--slate); color: #f1f5f9;
       border-radius: 6px; font-size: 12px; overflow: auto; }
+    .copybtn { position: absolute; top: 7px; right: 7px; font: inherit; font-size: 11px;
+      padding: 3px 9px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.25);
+      background: rgba(255,255,255,0.12); color: #e2e8f0; }
+    .copybtn:hover { background: rgba(255,255,255,0.22); }
+    .copybtn.ok { background: #16a34a; border-color: #16a34a; color: #fff; }
 
     .banner { font-size: 14px; border: 1px solid; border-radius: 6px; padding: 6px 12px; }
     .banner.err { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
@@ -848,9 +895,14 @@ class SqlWorkbench extends LitElement {
     .dialog { background: #fff; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.25);
       width: 100%; max-width: 28rem; max-height: 75vh; display: flex; flex-direction: column; }
     .dialog.wide { max-width: 48rem; max-height: 70vh; }
+    .dialog.project { max-width: 44rem; }
     .dhead { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 8px 12px; }
     .dhead h3 { font-size: 14px; font-weight: 500; margin: 0; }
     .dbody { padding: 8px 12px 0; }
+    .dialog.project .dhead { padding: 14px 20px; }
+    .dialog.project .dbody { padding: 6px 20px 22px; line-height: 1.55; }
+    .dialog.project .dbody .muted { font-size: 13px; }
+    .dialog.project .dbody .foot { margin-top: 1.3rem; }
     .doclist { flex: 1; overflow: auto; padding: 8px 12px; margin: 0; list-style: none; font-size: 14px; }
     .doclist li { padding: 2px 0; }
     .doclist label { display: flex; align-items: center; gap: 8px; }

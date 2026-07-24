@@ -11,7 +11,8 @@ import {
   handleTables, handleSchema, handleCheck, handleRun,
   handleListSnippets, handleCreateSnippet, handleUpdateSnippet, handleDeleteSnippet,
 } from "./core.js";
-import { loadProjects } from "./registry.js";
+import { loadProjects, getProject } from "./registry.js";
+import { projectScript } from "./opsplan.js";
 
 // Connectable databases in the data dir: .db / .sqlite files, minus the
 // workbench's own sidecars. Presentational - path guards on /connect are the
@@ -193,6 +194,16 @@ export function startServer({ connection, makeConnection, dataDir, host, port, b
             local: listLocalDbs(dataDirResolved),
             projects: loadProjects(),
           });
+        }
+
+        // The exact runnable script for a project's investigate/edit flow, so a
+        // newcomer can read (and run) it by hand instead of trusting the tool.
+        if (method === "GET" && route === "/project-script") {
+          const pname = url.searchParams.get("name") ?? "";
+          const action = url.searchParams.get("action") === "investigate" ? "investigate" : "edit";
+          const proj = getProject(pname);
+          if (!proj) return json({ error: "unknown project" }, 404);
+          return json({ name: pname, action, script: projectScript(action, pname, proj) });
         }
 
         // Switch the active connection to a database in the data dir. Restricted

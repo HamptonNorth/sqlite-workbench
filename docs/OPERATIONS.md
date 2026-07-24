@@ -48,11 +48,24 @@ Requirements: `ssh`/`scp` set up for the host (key-based auth recommended), and
 whatever `stop`/`start` need (e.g. passwordless `sudo` for the unit, or run the
 scripts as a user that can manage the service).
 
-**Always dry-run first** — it prints the exact plan and runs nothing:
+**Trust nothing you haven't read.** Two ways to see exactly what will run:
 
 ```bash
-bun run scripts/remote.js edit aph2 --dry-run
+bun run scripts/remote.js edit aph2 --dry-run    # prints the plan, runs nothing
+bun run scripts/remote.js edit aph2 --script     # prints a runnable bash script
 ```
+
+`--script` emits a self-contained, commented script with your project's real
+values — review it, or save and run it yourself instead of trusting the tool:
+
+```bash
+bun run scripts/remote.js edit aph2 --script > edit-aph2.sh
+less edit-aph2.sh        # read every line
+bash edit-aph2.sh        # ...then run it by hand
+```
+
+The same script is viewable in the app: the project modal's **"View the exact
+script this runs"** expander shows it with a copy button.
 
 ---
 

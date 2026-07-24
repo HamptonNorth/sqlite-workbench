@@ -17,6 +17,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync, existsSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { homedir } from "node:os";
+import { projectScript } from "../src/server/opsplan.js";
 
 const repoRoot = resolve(import.meta.dir, "..");
 const cli = join(repoRoot, "bin", "cli.js");
@@ -204,12 +205,24 @@ const opts = { dryRun: flags.has("--dry-run"), yes: flags.has("--yes") };
 
 if (!cmd || !name || (cmd !== "investigate" && cmd !== "edit")) {
   console.log(`Usage:
-  bun run scripts/remote.js investigate <project> [--dry-run]
-  bun run scripts/remote.js edit        <project> [--dry-run] [--yes]
+  bun run scripts/remote.js investigate <project> [--dry-run] [--script]
+  bun run scripts/remote.js edit        <project> [--dry-run] [--yes] [--script]
+
+  --dry-run   print the plan and run nothing
+  --script    print a runnable, self-contained bash script and exit (nothing runs)
+              — review it, or  > edit.sh  and run it yourself
+  --yes       skip confirmations (edit)
 
 Projects come from the registry (see docs/OPERATIONS.md):
   $SWB_PROJECTS, else ./projects.json, else ~/.config/sqlite-workbench/projects.json`);
   process.exit(name ? 1 : 0);
+}
+
+// --script: emit the runnable bash and exit. Nothing is executed - the whole
+// point is that you can read it (and run it yourself) rather than trust us.
+if (flags.has("--script")) {
+  process.stdout.write(projectScript(cmd, name, loadProject(name)));
+  process.exit(0);
 }
 
 if (cmd === "investigate") await investigate(name, opts);

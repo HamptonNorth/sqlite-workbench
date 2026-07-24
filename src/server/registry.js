@@ -16,6 +16,20 @@ export function resolveRegistryPath(cwd = process.cwd()) {
   return join(homedir(), ".config", "sqlite-workbench", "projects.json");
 }
 
+// The full raw project entry (host, remoteDb, stop, start, port) or null.
+// Used to build the ops scripts - which need the stop/start commands loadProjects
+// deliberately omits from its lighter listing.
+export function getProject(name, cwd = process.cwd()) {
+  const path = resolveRegistryPath(cwd);
+  if (!existsSync(path)) return null;
+  let reg;
+  try { reg = JSON.parse(readFileSync(path, "utf8")); }
+  catch { return null; }
+  const p = reg.projects?.[name];
+  if (!p || typeof p !== "object") return null;
+  return { name, ...p };
+}
+
 // Never throws - a missing or malformed registry just means "no projects".
 export function loadProjects(cwd = process.cwd()) {
   const path = resolveRegistryPath(cwd);

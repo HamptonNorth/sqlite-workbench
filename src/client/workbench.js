@@ -120,6 +120,8 @@ class SqlWorkbench extends LitElement {
     _canWrite: { state: true },
     _databases:{ state: true },   // { current, local[], projects[] } | null
     _projectInfo: { state: true },// a remote project shown in the "how to" modal | null
+    _scripts:  { state: true },   // { investigate?, edit? } cached full scripts
+    _scriptOpen:{ state: true },  // { investigate?:bool, edit?:bool }
   };
 
   constructor() {
@@ -151,6 +153,8 @@ class SqlWorkbench extends LitElement {
     this._canWrite = false;
     this._databases = null;
     this._projectInfo = null;
+    this._scripts = {};
+    this._scriptOpen = {};
   }
 
   async connectedCallback() {
@@ -239,6 +243,8 @@ class SqlWorkbench extends LitElement {
       // dropdown to the current database (we didn't switch).
       const name = val.slice("project:".length);
       this._projectInfo = this._databases?.projects?.find((p) => p.name === name) ?? null;
+      this._scripts = {};        // fresh per project
+      this._scriptOpen = {};
       e.target.value = this._connectValue();
       return;
     }
@@ -591,6 +597,42 @@ class SqlWorkbench extends LitElement {
     setTimeout(() => { btn.textContent = prev; btn.classList.remove("ok"); }, 1200);
   }
 
+  async _toggleScript(action) {
+    const open = { ...this._scriptOpen, [action]: !this._scriptOpen[action] };
+    this._scriptOpen = open;
+    if (open[action] && this._scripts[action] == null) {
+      const name = this._projectInfo?.name;
+      try {
+        const r = await this._get(`/project-script?name=${encodeURIComponent(name)}&action=${action}`);
+        this._scripts = { ...this._scripts, [action]: r.script };
+      } catch (e) {
+        this._scripts = { ...this._scripts, [action]: `# could not load script: ${e.message}` };
+      }
+    }
+  }
+
+  // One project action: the wrapper command, plus an expander showing the exact
+  // script it runs (view / copy / run by hand).
+  _projectAction(action, label, cmd) {
+    const open = this._scriptOpen[action];
+    const script = this._scripts[action];
+    return html`
+      <p class="cmdlabel">${label}:</p>
+      ${this._cmdBlock(cmd)}
+      <button class="scripttoggle" @click=${() => this._toggleScript(action)}>
+        ${open ? "▾" : "▸"} ${open ? "Hide" : "View"} the exact script this runs
+      </button>
+      ${open
+        ? script == null
+          ? html`<p class="muted">Loading…</p>`
+          : html`<div class="cmdwrap">
+              <pre class="cmd scriptpre">${script}</pre>
+              <button class="copybtn" title="Copy to clipboard" @click=${(e) => this._copy(script, e)}>Copy</button>
+            </div>`
+        : ""}
+    `;
+  }
+
   _renderProjectInfo() {
     const p = this._projectInfo;
     if (!p) return "";
@@ -607,12 +649,14 @@ class SqlWorkbench extends LitElement {
             <p class="muted">This database lives on <code>${p.host ?? "?"}</code>${
               p.remoteDb ? html` at <code>${p.remoteDb}</code>` : ""
             }. The workbench can't open it directly — use the support scripts, which stop the
-            service, work on a copy locally with guard rails, and put it back.</p>
-            <p class="cmdlabel">Investigate (read-only):</p>
-            ${this._cmdBlock(`bun run scripts/remote.js investigate ${arg}`)}
-            <p class="cmdlabel">Edit (stop → download → edit → verify → upload → restart):</p>
-            ${this._cmdBlock(`bun run scripts/remote.js edit ${arg}`)}
-            <p class="muted foot">Full runbook: <code>docs/OPERATIONS.md</code>.</p>
+            service, work on a copy locally with guard rails, and put it back. Trust nothing you
+            haven't read: expand “the exact script” to see (and run) every command yourself.</p>
+            ${this._projectAction("investigate", "Investigate (read-only)",
+              `bun run scripts/remote.js investigate ${arg}`)}
+            ${this._projectAction("edit", "Edit (stop → download → edit → verify → upload → restart)",
+              `bun run scripts/remote.js edit ${arg}`)}
+            <p class="muted foot">Full runbook: <code>docs/OPERATIONS.md</code>. Print a script
+            without the browser: <code>bun run scripts/remote.js edit ${arg} --script</code>.</p>
           </div>
         </div>
       </div>
@@ -797,6 +841,11 @@ class SqlWorkbench extends LitElement {
       background: rgba(255,255,255,0.12); color: #e2e8f0; }
     .copybtn:hover { background: rgba(255,255,255,0.22); }
     .copybtn.ok { background: #16a34a; border-color: #16a34a; color: #fff; }
+    .scripttoggle { display: inline-block; margin: 0.35rem 0 0.2rem; padding: 0; background: none;
+      border: 0; color: var(--dim); font-size: 12px; text-decoration: underline dotted;
+      text-underline-offset: 2px; }
+    .scripttoggle:hover { color: var(--ink); }
+    .scriptpre { padding-right: 4.5rem; max-height: 15rem; white-space: pre; line-height: 1.45; }
 
     .banner { font-size: 14px; border: 1px solid; border-radius: 6px; padding: 6px 12px; }
     .banner.err { background: #fef2f2; border-color: #fecaca; color: #991b1b; }

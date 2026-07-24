@@ -50,14 +50,16 @@ TS="$(date +%Y%m%dT%H%M%S)"
 COPY="./data/${slug(name)}-edit-$TS.sqlite"
 BAK="$DB.bak-$TS"
 
-# 1) Stop the live service.
-ssh "$HOST" ${bq(p.stop)}
+# 1) Stop the live service. (-t: allocate a TTY so a remote sudo can prompt for
+#    a password. Add -t to any ssh below whose command also needs sudo.)
+ssh -t "$HOST" ${bq(p.stop)}
 
 # 2) Fingerprint the remote DB (guards against a service that didn't stop).
+#    No -t here: this output is captured, and a TTY would corrupt it.
 BEFORE="$(ssh "$HOST" "sha256sum \\"$DB\\"" | awk '{print $1}')"
 
 # 3) Back up the remote original.
-ssh "$HOST" "cp -p \\"$DB\\" \\"$BAK\\""
+ssh -t "$HOST" "cp -p \\"$DB\\" \\"$BAK\\""
 
 # 4) Download a working copy.
 scp "$HOST:$DB" "$COPY"
@@ -73,11 +75,11 @@ AFTER="$(ssh "$HOST" "sha256sum \\"$DB\\"" | awk '{print $1}')"
 [ "$BEFORE" = "$AFTER" ] || { echo "Remote changed since download - aborting."; exit 1; }
 
 # 8) Upload: drop stale WAL sidecars, then replace the file.
-ssh "$HOST" "rm -f \\"$DB-wal\\" \\"$DB-shm\\""
+ssh -t "$HOST" "rm -f \\"$DB-wal\\" \\"$DB-shm\\""
 scp "$COPY" "$HOST:$DB"
 
 # 9) Restart the service.
-ssh "$HOST" ${bq(p.start)}
+ssh -t "$HOST" ${bq(p.start)}
 
 echo "Done. Backup on the server: $BAK"
 `;

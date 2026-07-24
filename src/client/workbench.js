@@ -625,9 +625,13 @@ class SqlWorkbench extends LitElement {
       ${open
         ? script == null
           ? html`<p class="muted">Loading…</p>`
-          : html`<div class="cmdwrap">
-              <pre class="cmd scriptpre">${script}</pre>
-              <button class="copybtn" title="Copy to clipboard" @click=${(e) => this._copy(script, e)}>Copy</button>
+          : html`<div class="scriptbox">
+              <div class="scriptbar">
+                <span class="scriptlang">bash</span>
+                <span class="spacer"></span>
+                <button class="barcopy" title="Copy to clipboard" @click=${(e) => this._copy(script, e)}>Copy</button>
+              </div>
+              <pre class="scriptpre">${script}</pre>
             </div>`
         : ""}
     `;
@@ -845,7 +849,17 @@ class SqlWorkbench extends LitElement {
       border: 0; color: var(--dim); font-size: 12px; text-decoration: underline dotted;
       text-underline-offset: 2px; }
     .scripttoggle:hover { color: var(--ink); }
-    .scriptpre { padding-right: 4.5rem; max-height: 15rem; white-space: pre; line-height: 1.45; }
+    /* Script block with a header bar, so Copy never overlaps the scrollbar. */
+    .scriptbox { border-radius: 6px; overflow: hidden; background: var(--slate); }
+    .scriptbar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.1); }
+    .scriptlang { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.04em; }
+    .barcopy { font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 5px;
+      border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.12); color: #e2e8f0; }
+    .barcopy:hover { background: rgba(255,255,255,0.22); }
+    .barcopy.ok { background: #16a34a; border-color: #16a34a; color: #fff; }
+    .scriptpre { margin: 0; padding: 12px 14px; color: #f1f5f9; font-size: 12px; line-height: 1.45;
+      white-space: pre; overflow: auto; max-height: 15rem; }
 
     .banner { font-size: 14px; border: 1px solid; border-radius: 6px; padding: 6px 12px; }
     .banner.err { background: #fef2f2; border-color: #fecaca; color: #991b1b; }

@@ -59,9 +59,17 @@ function shQuote(a) { return /[^A-Za-z0-9_@%+=:,./-]/.test(a) ? `'${a.replace(/'
 
 // Run a command, printing it first. capture:true returns stdout.
 async function run(argv, { dryRun = false, capture = false, allowFail = false } = {}) {
-  console.log(`  ${C.dim}$ ${argv.map(shQuote).join(" ")}${C.reset}`);
+  // Interactive ssh (a remote `sudo systemctl …` needs a password) requires a
+  // TTY, so allocate one with -t and inherit stdin so you can type it. NOT for
+  // captured commands: a PTY corrupts the piped output we parse (e.g. sha256sum).
+  const cmd = argv[0] === "ssh" && !capture ? ["ssh", "-t", ...argv.slice(1)] : argv;
+  console.log(`  ${C.dim}$ ${cmd.map(shQuote).join(" ")}${C.reset}`);
   if (dryRun) return { code: 0, stdout: "" };
-  const proc = Bun.spawn(argv, { stdout: capture ? "pipe" : "inherit", stderr: "inherit" });
+  const proc = Bun.spawn(cmd, {
+    stdin: capture ? "ignore" : "inherit",
+    stdout: capture ? "pipe" : "inherit",
+    stderr: "inherit",
+  });
   const stdout = capture ? await new Response(proc.stdout).text() : "";
   const code = await proc.exited;
   if (code !== 0 && !allowFail) die(`command failed (exit ${code})`);

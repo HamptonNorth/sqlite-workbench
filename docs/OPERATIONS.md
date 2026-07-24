@@ -45,8 +45,10 @@ Registry resolution order: `$SWB_PROJECTS`, then `./projects.json`, then
 `~/.config/sqlite-workbench/projects.json`.
 
 Requirements: `ssh`/`scp` set up for the host (key-based auth recommended), and
-whatever `stop`/`start` need (e.g. passwordless `sudo` for the unit, or run the
-scripts as a user that can manage the service).
+whatever `stop`/`start` need. If those use `sudo`, the scripts allocate a
+terminal (`ssh -t`) so you'll be **prompted for your sudo password** — once for
+stop and once for restart. To avoid the prompts, configure passwordless `sudo`
+for those units, or run as a user that can manage the service.
 
 **Trust nothing you haven't read.** Two ways to see exactly what will run:
 

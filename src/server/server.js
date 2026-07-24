@@ -4,9 +4,47 @@
 // logic lives in core.js as plain functions, and this file just maps HTTP to
 // those. No web framework, so a future Node port stays cheap.
 
+import { fileURLToPath } from "node:url";
 import { handleTables, handleSchema, handleCheck, handleRun } from "./core.js";
 
 const html = String.raw;
+
+// ---- client assets ---------------------------------------------------------
+// The UI is one Shadow-DOM web component bundled in-process with Bun.build, so
+// "just run the CLI" works with no separate build step and no CDN dependency.
+// Built once, lazily, and cached (keyed by the API base so the mounted element's
+// `base` attribute matches --base).
+const clientDir = fileURLToPath(new URL("../client/", import.meta.url));
+let _assetsPromise = null;
+
+async function buildAssets(base) {
+  const res = await Bun.build({
+    entrypoints: [`${clientDir}workbench.js`],
+    target: "browser",
+    format: "esm",
+    splitting: true,
+    minify: true,
+  });
+  if (!res.success) {
+    throw new AggregateError(res.logs, "client bundle failed");
+  }
+  const assets = new Map();
+  for (const out of res.outputs) {
+    const name = "/" + out.path.replace(/^\.?\//, "");
+    assets.set(name, { body: await out.text(), type: out.type || "text/javascript" });
+  }
+  // index.html is static; inject the configured API base into the mount point.
+  let shell = await Bun.file(`${clientDir}index.html`).text();
+  if (base !== "/api") shell = shell.replace('base="/api"', `base="${base}"`);
+  assets.set("/", { body: shell, type: "text/html; charset=utf-8" });
+  assets.set("/index.html", { body: shell, type: "text/html; charset=utf-8" });
+  return assets;
+}
+
+function clientAssets(base) {
+  if (!_assetsPromise) _assetsPromise = buildAssets(base);
+  return _assetsPromise;
+}
 
 // Slice 1 landing page: prove we're connected and reading the file. Replaced by
 // the real client shell in Slice 3.
@@ -98,18 +136,19 @@ export function startServer({ sqlite, host, port, base = "/api", policy } = {}) 
       const { pathname } = url;
       const method = req.method;
 
-      if (pathname === "/" || pathname === "/index.html") {
-        return new Response(landingPage({ sqlite }), {
-          headers: { "content-type": "text/html; charset=utf-8" },
-        });
-      }
-
       // Everything under `base` is the API. canRead gates all of it.
       if (pathname === base || pathname.startsWith(`${base}/`)) {
         const route = pathname.slice(base.length); // e.g. "/tables", "/schema/users"
 
         if (route === "/health") {
           return json({ ok: true, tables: sqlite.listTables().length, wal: sqlite.isWal });
+        }
+
+        // Ungated: the UI reads this before anything to show the right badge and
+        // enable/disable the write path. It's a capability flag, not data.
+        if (route === "/capabilities") {
+          const w = canWrite(req);
+          return json({ base, canWrite: w, readOnly: !w });
         }
 
         if (!canRead(req)) return json({ error: "forbidden" }, 403);
@@ -138,6 +177,24 @@ export function startServer({ sqlite, host, port, base = "/api", policy } = {}) 
         }
 
         return json({ error: "not found" }, 404);
+      }
+
+      // Static client assets: index.html at "/" plus the bundled JS (+ chunks).
+      if (method === "GET") {
+        try {
+          const assets = await clientAssets(base);
+          const a = assets.get(pathname);
+          if (a) return new Response(a.body, { headers: { "content-type": a.type } });
+        } catch (e) {
+          console.error(`client bundle failed: ${e?.message ?? e}`);
+          // Fall back to the plain server-rendered page so the tool is still
+          // usable (list of tables) even if the bundle can't be built.
+          if (pathname === "/" || pathname === "/index.html") {
+            return new Response(landingPage({ sqlite }), {
+              headers: { "content-type": "text/html; charset=utf-8" },
+            });
+          }
+        }
       }
 
       return json({ error: "not found" }, 404);

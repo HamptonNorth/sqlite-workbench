@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SQLite Workbench</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #fff; }
+    </style>
+  </head>
+  <body>
+    <!-- The whole UI is one self-contained (Shadow DOM) web component. `base`
+         is where the API lives; the server rewrites it if --base is set. -->
+    <sqlite-workbench base="/api"></sqlite-workbench>
+    <script type="module" src="/workbench.js"></script>
+  </body>
+</html>

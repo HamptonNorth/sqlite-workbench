@@ -39,6 +39,29 @@ echo "Copy at $COPY - delete it when you're done."
 }
 
 export function editScript(name, p) {
+  const sudo = p.sudo === true;
+
+  // The database owner can't be your ssh user (e.g. it's under /opt, owned by a
+  // service account). sudo:true swaps it in place with `sudo cp`, which keeps
+  // the file's owner/permissions because it overwrites contents rather than
+  // creating a new file.
+  const backup = sudo
+    ? `# 3) Back up the remote original (sudo: keeps the file's owner/permissions).
+ssh -t "$HOST" "sudo cp -p \\"$DB\\" \\"$BAK\\""`
+    : `# 3) Back up the remote original.
+ssh -t "$HOST" "cp -p \\"$DB\\" \\"$BAK\\""`;
+
+  const upload = sudo
+    ? `# 8) Upload. You can't scp straight onto a service-owned file, so stage into
+#    your home dir, then 'sudo cp' over the original (preserving its
+#    owner/permissions), and clean up.
+STAGE="sqlite-workbench-upload-$TS.sqlite"
+scp "$COPY" "$HOST:$STAGE"
+ssh -t "$HOST" "sudo rm -f \\"$DB-wal\\" \\"$DB-shm\\" && sudo cp \\"$STAGE\\" \\"$DB\\" && rm -f \\"$STAGE\\""`
+    : `# 8) Upload: drop stale WAL sidecars, then replace the file.
+ssh -t "$HOST" "rm -f \\"$DB-wal\\" \\"$DB-shm\\""
+scp "$COPY" "$HOST:$DB"`;
+
   return `#!/usr/bin/env bash
 # Edit "${name}". REVIEW EVERY LINE before running. This is exactly what
 # 'bun run scripts/remote.js edit' automates; run it by hand if you'd rather.
@@ -58,8 +81,7 @@ ssh -t "$HOST" ${bq(p.stop)}
 #    No -t here: this output is captured, and a TTY would corrupt it.
 BEFORE="$(ssh "$HOST" "sha256sum \\"$DB\\"" | awk '{print $1}')"
 
-# 3) Back up the remote original.
-ssh -t "$HOST" "cp -p \\"$DB\\" \\"$BAK\\""
+${backup}
 
 # 4) Download a working copy.
 scp "$HOST:$DB" "$COPY"
@@ -74,9 +96,7 @@ bun -e 'import{Database}from"bun:sqlite";const d=new Database(process.argv[1],{r
 AFTER="$(ssh "$HOST" "sha256sum \\"$DB\\"" | awk '{print $1}')"
 [ "$BEFORE" = "$AFTER" ] || { echo "Remote changed since download - aborting."; exit 1; }
 
-# 8) Upload: drop stale WAL sidecars, then replace the file.
-ssh -t "$HOST" "rm -f \\"$DB-wal\\" \\"$DB-shm\\""
-scp "$COPY" "$HOST:$DB"
+${upload}
 
 # 9) Restart the service.
 ssh -t "$HOST" ${bq(p.start)}

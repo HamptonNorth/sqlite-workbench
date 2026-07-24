@@ -41,6 +41,16 @@ cp projects.example.json projects.json      # projects.json is git-ignored
 }
 ```
 
+Point `remoteDb` at the file the **service actually opens** (check the systemd
+unit / app config) — there may be stale copies elsewhere on the box, and editing
+the wrong one looks like "my change didn't take".
+
+Add `"sudo": true` when the database is owned by a **service account** (typically
+under `/opt` or `/var/lib`) so your ssh user can read but not overwrite it. The
+file operations (backup and replace) then run via `sudo`: the new file is staged
+into your home dir and `sudo cp`'d over the original, which keeps the original's
+owner and permissions. Without it you'll get `scp: … Permission denied` on upload.
+
 Registry resolution order: `$SWB_PROJECTS`, then `./projects.json`, then
 `~/.config/sqlite-workbench/projects.json`.
 

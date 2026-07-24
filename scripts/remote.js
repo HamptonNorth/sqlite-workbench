@@ -143,9 +143,16 @@ async function edit(name, { dryRun, yes }) {
   const copy = join(dataDir, `${name}-edit-${stamp()}.sqlite`);
   const remoteBak = `${p.remoteDb}.bak-${stamp()}`;
 
+  // A service-owned database (e.g. under /opt) can be read by your ssh user but
+  // not overwritten. sudo:true does the file ops via sudo: back up and swap in
+  // place with `sudo cp`, which preserves the file's owner/permissions because
+  // it overwrites the existing file's contents rather than creating a new one.
+  const sudo = p.sudo === true;
+  const staging = `sqlite-workbench-upload-${stamp()}.sqlite`; // in the ssh user's home
+
   console.log(`\n${C.bold}Edit ${name}${C.reset}  (stop → download → edit → verify → upload → restart)`);
   console.log(`  host      ${p.host}`);
-  console.log(`  remote db ${p.remoteDb}`);
+  console.log(`  remote db ${p.remoteDb}${sudo ? "  (sudo for file ops)" : ""}`);
   console.log(`  local copy${" "}${copy}`);
   console.log(`  remote bak${" "}${remoteBak}`);
   if (!dryRun && !confirm("This stops the live service and edits its database. Continue?", { yes })) {
@@ -160,7 +167,8 @@ async function edit(name, { dryRun, yes }) {
   console.log(`  ${C.dim}sha256 ${before ?? "(dry-run)"}${C.reset}`);
 
   step("Back up the remote original");
-  await run(["ssh", p.host, `cp -p ${shQuote(p.remoteDb)} ${shQuote(remoteBak)}`], { dryRun });
+  await run(["ssh", p.host,
+    `${sudo ? "sudo " : ""}cp -p ${shQuote(p.remoteDb)} ${shQuote(remoteBak)}`], { dryRun });
 
   step("Download the database");
   await run(["scp", `${p.host}:${p.remoteDb}`, copy], { dryRun });
@@ -194,8 +202,18 @@ async function edit(name, { dryRun, yes }) {
   step("Upload (remove stale WAL sidecars, then replace the file)");
   // Service is stopped, so removing stale -wal/-shm is safe and prevents an old
   // WAL being replayed over the new file.
-  await run(["ssh", p.host, `rm -f ${shQuote(p.remoteDb + "-wal")} ${shQuote(p.remoteDb + "-shm")}`], { dryRun });
-  await run(["scp", copy, `${p.host}:${p.remoteDb}`], { dryRun });
+  const rmWal = `rm -f ${shQuote(p.remoteDb + "-wal")} ${shQuote(p.remoteDb + "-shm")}`;
+  if (sudo) {
+    // Can't scp straight onto a service-owned file. Stage into home, then
+    // `sudo cp` over the original (preserving its owner/perms), then clean up.
+    await run(["scp", copy, `${p.host}:${staging}`], { dryRun });
+    await run(["ssh", p.host,
+      `sudo ${rmWal} && sudo cp ${shQuote(staging)} ${shQuote(p.remoteDb)} && rm -f ${shQuote(staging)}`],
+      { dryRun });
+  } else {
+    await run(["ssh", p.host, rmWal], { dryRun });
+    await run(["scp", copy, `${p.host}:${p.remoteDb}`], { dryRun });
+  }
 
   step("Restart the service");
   await run(["ssh", p.host, p.start], { dryRun });

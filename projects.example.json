@@ -16,7 +16,9 @@
       "remoteDb": "/var/lib/another-app/data.sqlite",
       "stop": "sudo systemctl stop another-app",
       "start": "sudo systemctl start another-app",
-      "port": 9998
+      "port": 9998,
+      "//sudo": "Set sudo:true when the DB is owned by a service account (e.g. under /opt or /var/lib) and your ssh user can read but not overwrite it. The file ops (backup/replace) then run via sudo, preserving the file's owner/permissions.",
+      "sudo": true
     }
   }
 }

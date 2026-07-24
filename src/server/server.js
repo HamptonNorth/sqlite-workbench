@@ -121,12 +121,15 @@ async function readJson(req) {
  * @param {string} opts.host
  * @param {number} opts.port
  * @param {string} opts.base     API base path (e.g. "/api")
- * @param {object} [opts.policy] { canRead(req), canWrite(req) } - Slice 6 injects
- *   real auth here. Defaults: read allowed (localhost dev), write follows --write.
+ * @param {object} [opts.policy] { canRead(req), canWrite(req), whoOf(req) } -
+ *   Slice 6 injects real auth here. Defaults: read allowed (localhost dev),
+ *   write follows --write, identity null.
+ * @param {function} [opts.onExecute] audit sink for executed writes.
  */
-export function startServer({ sqlite, host, port, base = "/api", policy } = {}) {
+export function startServer({ sqlite, host, port, base = "/api", policy, onExecute } = {}) {
   const canRead = policy?.canRead ?? (() => true);
   const canWrite = policy?.canWrite ?? (() => sqlite.canWrite);
+  const whoOf = policy?.whoOf ?? (() => null);
 
   const server = Bun.serve({
     hostname: host,
@@ -173,6 +176,8 @@ export function startServer({ sqlite, host, port, base = "/api", policy } = {}) 
             sql: body.sql,
             commit: body.commit === true,
             canWrite: canWrite(req),
+            who: whoOf(req),
+            onExecute,
           }));
         }
 

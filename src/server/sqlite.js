@@ -16,9 +16,15 @@
 // busy_timeout so a write waits for the app's write instead of erroring.
 
 import { Database } from "bun:sqlite";
-import { resolve } from "node:path";
+import { resolve, dirname, join } from "node:path";
+import { mkdirSync, readdirSync, unlinkSync } from "node:fs";
 
 export const DEFAULT_BUSY_TIMEOUT_MS = 5000;
+export const DEFAULT_SNAPSHOT_KEEP = 10;
+
+// Monotonic suffix so two snapshots taken in the same millisecond can't collide
+// on a filename (VACUUM INTO fails if the target already exists).
+let _snapSeq = 0;
 
 // Objects that are plumbing rather than data worth querying. sqlite_% is filtered
 // in SQL; the sidecar workbench file (if it ever lands in the same dir) and these
@@ -55,8 +61,11 @@ export function openSqlite({
   setWal = false,
   busyTimeout = DEFAULT_BUSY_TIMEOUT_MS,
   hidden = DEFAULT_HIDDEN,
+  snapshotDir = null,
+  snapshotKeep = DEFAULT_SNAPSHOT_KEEP,
 } = {}) {
   const path = resolve(dbPath);
+  const snapDir = snapshotDir ? resolve(snapshotDir) : join(dirname(path), "sql-snapshots");
 
   let journalMode = probeJournalMode(path);
 
@@ -97,6 +106,33 @@ export function openSqlite({
     return _rw;
   }
 
+  // ---- pre-write snapshots -------------------------------------------------
+  // Before a statement is COMMITTED, the whole database is copied with
+  // VACUUM INTO, giving an exact restore point for that one statement. Per
+  // COMMIT (not per session): writes are rare and deliberate, VACUUM INTO of a
+  // small DB is milliseconds, and a per-commit snapshot lets you undo exactly
+  // the statement that went wrong. Dry runs are NOT snapshotted - they roll back
+  // and change nothing, so there is nothing to restore to.
+  //
+  // Runs on the write handle and OUTSIDE any transaction (VACUUM can't run in
+  // one); handleRun calls this before BEGIN. Throws if the snapshot can't be
+  // taken, so the caller can FAIL CLOSED and not do the risky write.
+  function takeSnapshot() {
+    mkdirSync(snapDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const file = join(snapDir, `before-${stamp}-${String(++_snapSeq).padStart(4, "0")}.sqlite`);
+    writeDb().exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
+    try {
+      const old = readdirSync(snapDir)
+        .filter((f) => f.startsWith("before-") && f.endsWith(".sqlite"))
+        .sort();
+      for (const f of old.slice(0, Math.max(0, old.length - snapshotKeep))) {
+        unlinkSync(join(snapDir, f));
+      }
+    } catch { /* pruning is housekeeping - never fail the write over it */ }
+    return file;
+  }
+
   // Tables + views + row counts, for the sidebar and the "connected: N" page.
   function listTables() {
     const ro = readonlyDb();
@@ -128,11 +164,13 @@ export function openSqlite({
 
   return {
     dbPath: path,
+    snapshotDir: snapDir,
     journalMode,
     isWal: journalMode === "wal",
     canWrite: write,
     readonlyDb,
     writeDb,
+    takeSnapshot,
     listTables,
     close,
   };

@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openSqlite } from "../src/server/sqlite.js";
@@ -138,11 +138,93 @@ describe("READ-ONLY IS ENFORCED BY THE CONNECTION, not the sniffer", () => {
     );
   });
 
-  it("even 'canWrite' can't be opened when the process is read-only", () => {
+  it("a write can't be executed when the process is read-only, even if policy allows it", () => {
     expect(() => reader.writeDb()).toThrow(/write access is disabled/i);
-    // and the write path is not wired in this slice
+    // A read-only process has no write handle at all, so even a canWrite:true
+    // request is refused - defence in depth behind the connection boundary.
     const res = handleRun(reader, { sql: "INSERT INTO users (name) VALUES ('z')", canWrite: true });
-    expect(res.status).toBe(501);
-    expect(res.body.code).toBe("write_not_implemented");
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("read_only");
+    expect(handleRun(reader, { sql: "SELECT COUNT(*) AS n FROM users WHERE name='z'" }).body.rows[0].n).toBe(0);
+  });
+});
+
+// A fresh writable database per test - no cross-test coupling on row counts or
+// the snapshot directory.
+function makeWriter() {
+  const dir = mkdtempSync(join(tmpdir(), "sqlite-wb-w-"));
+  const path = join(dir, "w.sqlite");
+  const seed = new Database(path);
+  seed.exec("PRAGMA journal_mode = WAL");
+  seed.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+  seed.close();
+  const w = openSqlite({ dbPath: path, write: true });
+  return { w, path, cleanup() { w.close(); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+describe("write path (--write): rolls back unless committed", () => {
+  it("a write rolls back by default and only persists when committed; audit records both", () => {
+    const { w, cleanup } = makeWriter();
+    const audits = [];
+    const on = (e) => audits.push(e);
+    try {
+      // no commit -> reported but rolled back
+      const dry = handleRun(w, { sql: "INSERT INTO t (v) VALUES ('dry')", canWrite: true, onExecute: on });
+      expect(dry.status).toBe(200);
+      expect(dry.body.mode).toBe("write");
+      expect(dry.body.committed).toBe(false);
+      expect(dry.body.rowsAffected).toBe(1);
+      expect(dry.body.snapshot).toBe(null);        // dry runs are not snapshotted
+      expect(handleRun(w, { sql: "SELECT COUNT(*) AS n FROM t" }).body.rows[0].n).toBe(0);
+
+      // commit -> persists
+      const wet = handleRun(w, { sql: "INSERT INTO t (v) VALUES ('wet')", canWrite: true, commit: true, onExecute: on });
+      expect(wet.body.committed).toBe(true);
+      expect(wet.body.rowsAffected).toBe(1);
+      expect(handleRun(w, { sql: "SELECT COUNT(*) AS n FROM t" }).body.rows[0].n).toBe(1);
+
+      // both executions were audited, flagged correctly
+      expect(audits.length).toBe(2);
+      expect(audits[0].committed).toBe(false);
+      expect(audits[1].committed).toBe(true);
+      expect(audits[1].snapshot).toBeTruthy();
+    } finally { cleanup(); }
+  });
+
+  it("snapshots before a COMMITTED write only, capturing the pre-write state", () => {
+    const { w, path, cleanup } = makeWriter();
+    const snaps = () => {
+      try { return readdirSync(w.snapshotDir).filter((f) => f.startsWith("before-")); }
+      catch { return []; }
+    };
+    try {
+      handleRun(w, { sql: "INSERT INTO t (v) VALUES ('one')", canWrite: true, commit: true });
+
+      // a dry run changes nothing, so there's nothing to snapshot
+      const before = snaps().length;
+      handleRun(w, { sql: "INSERT INTO t (v) VALUES ('dry')", canWrite: true });
+      expect(snaps().length).toBe(before);
+
+      // a committed write snapshots first - the file must show the state BEFORE it
+      const wet = handleRun(w, { sql: "INSERT INTO t (v) VALUES ('two')", canWrite: true, commit: true });
+      expect(wet.body.snapshot).toBeTruthy();
+
+      const liveRows = new Database(path, { readonly: true }).query("SELECT COUNT(*) AS n FROM t").get().n;
+      const snapRows = new Database(join(w.snapshotDir, wet.body.snapshot), { readonly: true })
+        .query("SELECT COUNT(*) AS n FROM t").get().n;
+      expect(liveRows).toBe(2);   // 'one' + 'two'
+      expect(snapRows).toBe(1);   // 'two' isn't in the pre-write snapshot
+    } finally { cleanup(); }
+  });
+
+  it("a disguised write is refused even on a writable process unless the user may write", () => {
+    const { w, cleanup } = makeWriter();
+    try {
+      // read-only user (canWrite:false) hitting a writable process: the leading-CTE
+      // write looks read-only, reaches the readonly connection, and is refused.
+      const res = handleRun(w, { sql: "WITH x AS (SELECT 1) DELETE FROM t", canWrite: false });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/readonly database/i);
+    } finally { cleanup(); }
   });
 });

@@ -94,8 +94,12 @@ export function handleCheck(sqlite, sql) {
 }
 
 // ---- POST /run ----  execute ONE statement.
-// { sql, commit?, canWrite } - commit only meaningful on the write path (Slice 4).
-export function handleRun(sqlite, { sql, commit = false, canWrite = false } = {}) {
+// { sql, commit?, canWrite, who?, onExecute? }
+//   commit  - false (default) is a DRY RUN: the write is rolled back and we
+//             report what it WOULD have changed. true actually persists it.
+//   who     - identity for the audit trail (from the auth policy; Slice 6).
+//   onExecute - audit sink, called for every executed statement.
+export function handleRun(sqlite, { sql, commit = false, canWrite = false, who = null, onExecute } = {}) {
   const text = String(sql ?? "").trim();
   if (!text) return { status: 400, body: { error: "no SQL supplied" } };
 
@@ -139,9 +143,66 @@ export function handleRun(sqlite, { sql, commit = false, canWrite = false } = {}
     };
   }
 
-  // Transactions, dry-run/commit, snapshots and audit land in Slice 4.
-  return {
-    status: 501,
-    body: { error: "The write path is not enabled in this build.", code: "write_not_implemented" },
-  };
+  let db;
+  try {
+    db = sqlite.writeDb(); // throws if the process wasn't started --write
+  } catch (e) {
+    return { status: 403, body: { error: e.message, code: "read_only" } };
+  }
+
+  // Snapshot BEFORE committing, and FAIL CLOSED if it can't be taken: the
+  // snapshot is the safety net for an irreversible change, so if there's no net
+  // (disk full, permissions) we don't do the risky thing. Must precede BEGIN -
+  // VACUUM cannot run inside a transaction. Dry runs change nothing, so they get
+  // no snapshot.
+  let snapshot = null;
+  if (commit) {
+    try {
+      snapshot = sqlite.takeSnapshot();
+    } catch (e) {
+      return {
+        status: 500,
+        body: {
+          error: `Could not take a pre-write snapshot, so nothing was run: ${e.message}`,
+          code: "snapshot_failed",
+        },
+      };
+    }
+  }
+  const snapName = snapshot ? snapshot.split("/").pop() : null;
+
+  // Always inside a transaction, ROLLED BACK unless commit:true - so a mistyped
+  // UPDATE reports what it would change and changes nothing.
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    let changes = 0;
+    try {
+      changes = db.run(text).changes ?? 0;
+      db.exec(commit ? "COMMIT" : "ROLLBACK");
+    } catch (inner) {
+      try { db.exec("ROLLBACK"); } catch { /* already unwound */ }
+      throw inner;
+    }
+
+    // Record it - dry runs included, flagged uncommitted. Never fail the request
+    // because auditing failed.
+    try { onExecute?.({ who, sql: text, rowsAffected: changes, committed: commit, snapshot: snapName }); }
+    catch { /* audit is best-effort */ }
+
+    return {
+      status: 200,
+      body: {
+        mode: "write",
+        committed: commit,
+        rowsAffected: changes,
+        snapshot: snapName,
+        ms: Date.now() - started,
+        message: commit
+          ? `Committed. ${changes} row(s) changed. Snapshot taken beforehand: ${snapName}`
+          : `Rolled back — nothing saved. ${changes} row(s) would change. Re-run with Commit to apply.`,
+      },
+    };
+  } catch (e) {
+    return { status: 400, body: { error: e.message } };
+  }
 }

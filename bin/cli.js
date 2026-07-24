@@ -8,6 +8,7 @@ import { parseArgs } from "node:util";
 import { statSync, accessSync, constants } from "node:fs";
 import { resolve } from "node:path";
 import { openSqlite } from "../src/server/sqlite.js";
+import { openSidecar } from "../src/server/sidecar.js";
 import { startServer } from "../src/server/server.js";
 
 const USAGE = `sqlite-workbench <db.sqlite> [options]
@@ -105,7 +106,10 @@ if (!sqlite.isWal) {
   );
 }
 
-const server = startServer({ sqlite, host, port, base });
+// Audit trail lives in the sidecar file (<db>.workbench.sqlite), never in the
+// target schema. Lazy: no sidecar file appears until the first write is recorded.
+const sidecar = openSidecar(dbPath);
+const server = startServer({ sqlite, host, port, base, onExecute: sidecar.appendAudit });
 
 const shownHost = host === "0.0.0.0" ? "0.0.0.0 (all interfaces)" : host;
 console.log(
@@ -118,6 +122,7 @@ console.log(`  bound: ${shownHost}`);
 function shutdown() {
   try { server.stop(); } catch { /* ignore */ }
   try { sqlite.close(); } catch { /* ignore */ }
+  try { sidecar.close(); } catch { /* ignore */ }
   process.exit(0);
 }
 process.on("SIGINT", shutdown);

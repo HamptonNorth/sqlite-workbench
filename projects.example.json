@@ -1,0 +1,22 @@
+{
+  "//": "Project registry for the support scripts (scripts/remote.js). Copy this to",
+  "//1": "projects.json (git-ignored) and edit. See docs/OPERATIONS.md for the full guide.",
+  "//2": "Resolution order: $SWB_PROJECTS, then ./projects.json, then ~/.config/sqlite-workbench/projects.json.",
+
+  "projects": {
+    "aph2": {
+      "host": "rcollins@aph-server",
+      "remoteDb": "/srv/aph2/db/aph2.sqlite",
+      "stop": "sudo systemctl stop aph2-diary",
+      "start": "sudo systemctl start aph2-diary",
+      "port": 9999
+    },
+    "another-app": {
+      "host": "deploy@192.168.1.50",
+      "remoteDb": "/var/lib/another-app/data.sqlite",
+      "stop": "sudo systemctl stop another-app",
+      "start": "sudo systemctl start another-app",
+      "port": 9998
+    }
+  }
+}

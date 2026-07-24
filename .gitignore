@@ -26,6 +26,9 @@ client/dist/
 .env
 .env.*
 
+# real project registry (hosts/paths are personal); the example is tracked
+projects.json
+
 # editor / OS
 .DS_Store
 .vscode/

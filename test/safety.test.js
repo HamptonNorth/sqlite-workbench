@@ -13,11 +13,17 @@ import { mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openSqlite } from "../src/server/sqlite.js";
+import { openSidecar, sidecarPath } from "../src/server/sidecar.js";
+import { existsSync } from "node:fs";
 import {
   handleTables,
   handleSchema,
   handleCheck,
   handleRun,
+  handleListSnippets,
+  handleCreateSnippet,
+  handleUpdateSnippet,
+  handleDeleteSnippet,
   MAX_ROWS,
   looksReadOnly,
   splitCount,
@@ -226,5 +232,72 @@ describe("write path (--write): rolls back unless committed", () => {
       expect(res.status).toBe(400);
       expect(res.body.error).toMatch(/readonly database/i);
     } finally { cleanup(); }
+  });
+});
+
+describe("snippets (sidecar store)", () => {
+  let sdir, target, store;
+  beforeAll(() => {
+    sdir = mkdtempSync(join(tmpdir(), "sqlite-wb-s-"));
+    target = join(sdir, "app.sqlite");
+    // Seed a target DB (its schema must stay untouched by snippet storage).
+    const seed = new Database(target);
+    seed.exec("PRAGMA journal_mode = WAL");
+    seed.exec("CREATE TABLE app_table (id INTEGER PRIMARY KEY)");
+    seed.close();
+    store = openSidecar(target);
+  });
+  afterAll(() => { store?.close(); rmSync(sdir, { recursive: true, force: true }); });
+
+  it("creates, lists, updates and deletes; requires name and sql", () => {
+    // create
+    const created = handleCreateSnippet(store, { name: "recent", sql: "SELECT 1", who: "alice" });
+    expect(created.status).toBe(201);
+    const snip = created.body.snippet;
+    expect(snip.name).toBe("recent");
+    expect(snip.owner).toBe("alice");
+
+    // list (shared)
+    const list = handleListSnippets(store).body.snippets;
+    expect(list.some((s) => s.id === snip.id)).toBe(true);
+
+    // update by the owner
+    const upd = handleUpdateSnippet(store, snip.id, { name: "renamed" }, { who: "alice" });
+    expect(upd.status).toBe(200);
+    expect(upd.body.snippet.name).toBe("renamed");
+    expect(upd.body.snippet.sql).toBe("SELECT 1"); // unchanged fields kept
+
+    // name + sql are required
+    expect(handleCreateSnippet(store, { name: "x", who: "alice" }).status).toBe(400);
+
+    // delete
+    expect(handleDeleteSnippet(store, snip.id, { who: "alice" }).status).toBe(200);
+    expect(handleDeleteSnippet(store, snip.id, { who: "alice" }).status).toBe(404);
+  });
+
+  it("only the owner or an admin may change/delete a snippet", () => {
+    const snip = handleCreateSnippet(store, { name: "mine", sql: "SELECT 2", who: "alice" }).body.snippet;
+
+    // another user cannot change or delete it
+    expect(handleUpdateSnippet(store, snip.id, { name: "hijack" }, { who: "bob" }).status).toBe(403);
+    expect(handleDeleteSnippet(store, snip.id, { who: "bob" }).status).toBe(403);
+
+    // an admin can override
+    expect(handleDeleteSnippet(store, snip.id, { who: "bob", isAdmin: true }).status).toBe(200);
+  });
+
+  it("stores snippets in the sidecar file, NOT the target schema", () => {
+    handleCreateSnippet(store, { name: "keep", sql: "SELECT 3", who: null });
+
+    // the sidecar file exists and holds the snippet...
+    expect(existsSync(sidecarPath(target))).toBe(true);
+
+    // ...and the target DB's schema is untouched (no snippets/sql_snippets table)
+    const t = new Database(target, { readonly: true });
+    const names = t.query(`SELECT name FROM sqlite_master WHERE type='table'`).all().map((r) => r.name);
+    t.close();
+    expect(names).toContain("app_table");
+    expect(names).not.toContain("snippets");
+    expect(names).not.toContain("sql_snippets");
   });
 });

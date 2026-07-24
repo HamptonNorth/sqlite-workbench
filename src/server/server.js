@@ -5,7 +5,10 @@
 // those. No web framework, so a future Node port stays cheap.
 
 import { fileURLToPath } from "node:url";
-import { handleTables, handleSchema, handleCheck, handleRun } from "./core.js";
+import {
+  handleTables, handleSchema, handleCheck, handleRun,
+  handleListSnippets, handleCreateSnippet, handleUpdateSnippet, handleDeleteSnippet,
+} from "./core.js";
 
 const html = String.raw;
 
@@ -121,15 +124,17 @@ async function readJson(req) {
  * @param {string} opts.host
  * @param {number} opts.port
  * @param {string} opts.base     API base path (e.g. "/api")
- * @param {object} [opts.policy] { canRead(req), canWrite(req), whoOf(req) } -
- *   Slice 6 injects real auth here. Defaults: read allowed (localhost dev),
- *   write follows --write, identity null.
+ * @param {object} [opts.policy] { canRead(req), canWrite(req), whoOf(req),
+ *   isAdmin(req) } - Slice 6 injects real auth here. Defaults: read allowed
+ *   (localhost dev), write follows --write, identity null, not admin.
  * @param {function} [opts.onExecute] audit sink for executed writes.
+ * @param {object} [opts.store] the sidecar snippet store (src/server/sidecar.js).
  */
-export function startServer({ sqlite, host, port, base = "/api", policy, onExecute } = {}) {
+export function startServer({ sqlite, host, port, base = "/api", policy, onExecute, store } = {}) {
   const canRead = policy?.canRead ?? (() => true);
   const canWrite = policy?.canWrite ?? (() => sqlite.canWrite);
   const whoOf = policy?.whoOf ?? (() => null);
+  const isAdmin = policy?.isAdmin ?? (() => false);
 
   const server = Bun.serve({
     hostname: host,
@@ -179,6 +184,25 @@ export function startServer({ sqlite, host, port, base = "/api", policy, onExecu
             who: whoOf(req),
             onExecute,
           }));
+        }
+
+        // ---- snippets (sidecar store) ----
+        if (store) {
+          if (method === "GET" && route === "/snippets") {
+            return send(handleListSnippets(store));
+          }
+          if (method === "POST" && route === "/snippets") {
+            const body = await readJson(req);
+            return send(handleCreateSnippet(store, { name: body.name, sql: body.sql, who: whoOf(req) }));
+          }
+          if ((method === "PUT" || method === "DELETE") && route.startsWith("/snippets/")) {
+            const id = Number(route.slice("/snippets/".length));
+            if (!Number.isInteger(id)) return json({ error: "bad snippet id" }, 400);
+            const auth = { who: whoOf(req), isAdmin: isAdmin(req) };
+            if (method === "DELETE") return send(handleDeleteSnippet(store, id, auth));
+            const body = await readJson(req);
+            return send(handleUpdateSnippet(store, id, { name: body.name, sql: body.sql }, auth));
+          }
         }
 
         return json({ error: "not found" }, 404);

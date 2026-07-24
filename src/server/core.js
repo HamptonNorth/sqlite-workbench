@@ -206,3 +206,48 @@ export function handleRun(sqlite, { sql, commit = false, canWrite = false, who =
     return { status: 400, body: { error: e.message } };
   }
 }
+
+// ---- snippets --------------------------------------------------------------
+// Saved queries, shared across workbench users. The owner is recorded so only
+// they (or an admin) can change/delete one. Snippets are just text - saving one
+// grants no extra power - so plain read access is enough to create them.
+//
+// `store` is the sidecar snippet store (src/server/sidecar.js).
+
+// In dev mode there's no auth, so identity is null and snippets are owned by
+// null - a single local user, who may edit anything. With real auth (Slice 6)
+// `owner` is the who, and only that who or an admin may change a snippet.
+function canEditSnippet(row, who, isAdmin) {
+  return !!isAdmin || row.owner == null || row.owner === who;
+}
+
+export function handleListSnippets(store) {
+  return { status: 200, body: { snippets: store.listSnippets() } };
+}
+
+export function handleCreateSnippet(store, { name, sql, who = null } = {}) {
+  const n = String(name ?? "").trim();
+  const s = String(sql ?? "").trim();
+  if (!n || !s) return { status: 400, body: { error: "name and sql are required" } };
+  const snippet = store.createSnippet({ name: n.slice(0, 120), sql: s, owner: who });
+  return { status: 201, body: { snippet } };
+}
+
+export function handleUpdateSnippet(store, id, { name, sql } = {}, { who = null, isAdmin = false } = {}) {
+  const row = store.getSnippet(id);
+  if (!row) return { status: 404, body: { error: "not found" } };
+  if (!canEditSnippet(row, who, isAdmin)) return { status: 403, body: { error: "not yours to change" } };
+  const next = {
+    name: (typeof name === "string" && name.trim() ? name.trim() : row.name).slice(0, 120),
+    sql: typeof sql === "string" && sql.trim() ? sql.trim() : row.sql,
+  };
+  return { status: 200, body: { snippet: store.updateSnippet(id, next) } };
+}
+
+export function handleDeleteSnippet(store, id, { who = null, isAdmin = false } = {}) {
+  const row = store.getSnippet(id);
+  if (!row) return { status: 404, body: { error: "not found" } };
+  if (!canEditSnippet(row, who, isAdmin)) return { status: 403, body: { error: "not yours to delete" } };
+  store.deleteSnippet(id);
+  return { status: 200, body: { ok: true } };
+}

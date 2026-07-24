@@ -106,10 +106,15 @@ if (!sqlite.isWal) {
   );
 }
 
-// Audit trail lives in the sidecar file (<db>.workbench.sqlite), never in the
-// target schema. Lazy: no sidecar file appears until the first write is recorded.
-const sidecar = openSidecar(dbPath);
-const server = startServer({ sqlite, host, port, base, onExecute: sidecar.appendAudit });
+// Audit trail and saved snippets live in the sidecar file
+// (<db>.workbench.sqlite), never in the target schema unless --snippets-in-db is
+// given. Lazy: no sidecar file appears until the first thing needs recording.
+const sidecar = openSidecar(dbPath, { snippetsInDb: values["snippets-in-db"] });
+const server = startServer({
+  sqlite, host, port, base,
+  onExecute: sidecar.appendAudit,
+  store: sidecar,
+});
 
 const shownHost = host === "0.0.0.0" ? "0.0.0.0 (all interfaces)" : host;
 console.log(

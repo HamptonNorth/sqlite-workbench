@@ -4,6 +4,8 @@
 // logic lives in core.js as plain functions, and this file just maps HTTP to
 // those. No web framework, so a future Node port stays cheap.
 
+import { handleTables, handleSchema, handleCheck, handleRun } from "./core.js";
+
 const html = String.raw;
 
 // Slice 1 landing page: prove we're connected and reading the file. Replaced by
@@ -67,6 +69,13 @@ function json(body, status = 200) {
   });
 }
 
+// core.js handlers return { status, body }; adapt to a Response.
+const send = (r) => json(r.body, r.status);
+
+async function readJson(req) {
+  try { return await req.json(); } catch { return {}; }
+}
+
 /**
  * Start the HTTP server.
  * @param {object} opts
@@ -74,14 +83,20 @@ function json(body, status = 200) {
  * @param {string} opts.host
  * @param {number} opts.port
  * @param {string} opts.base     API base path (e.g. "/api")
+ * @param {object} [opts.policy] { canRead(req), canWrite(req) } - Slice 6 injects
+ *   real auth here. Defaults: read allowed (localhost dev), write follows --write.
  */
-export function startServer({ sqlite, host, port, base = "/api" }) {
+export function startServer({ sqlite, host, port, base = "/api", policy } = {}) {
+  const canRead = policy?.canRead ?? (() => true);
+  const canWrite = policy?.canWrite ?? (() => sqlite.canWrite);
+
   const server = Bun.serve({
     hostname: host,
     port,
-    fetch(req) {
+    async fetch(req) {
       const url = new URL(req.url);
       const { pathname } = url;
+      const method = req.method;
 
       if (pathname === "/" || pathname === "/index.html") {
         return new Response(landingPage({ sqlite }), {
@@ -89,9 +104,40 @@ export function startServer({ sqlite, host, port, base = "/api" }) {
         });
       }
 
-      // Slice 1 health check; the real API lands under `base` in Slice 2.
-      if (pathname === `${base}/health`) {
-        return json({ ok: true, tables: sqlite.listTables().length, wal: sqlite.isWal });
+      // Everything under `base` is the API. canRead gates all of it.
+      if (pathname === base || pathname.startsWith(`${base}/`)) {
+        const route = pathname.slice(base.length); // e.g. "/tables", "/schema/users"
+
+        if (route === "/health") {
+          return json({ ok: true, tables: sqlite.listTables().length, wal: sqlite.isWal });
+        }
+
+        if (!canRead(req)) return json({ error: "forbidden" }, 403);
+
+        if (method === "GET" && route === "/tables") {
+          return send(handleTables(sqlite));
+        }
+
+        if (method === "GET" && route.startsWith("/schema/")) {
+          const name = decodeURIComponent(route.slice("/schema/".length));
+          return send(handleSchema(sqlite, name));
+        }
+
+        if (method === "POST" && route === "/check") {
+          const { sql } = await readJson(req);
+          return send(handleCheck(sqlite, sql));
+        }
+
+        if (method === "POST" && route === "/run") {
+          const body = await readJson(req);
+          return send(handleRun(sqlite, {
+            sql: body.sql,
+            commit: body.commit === true,
+            canWrite: canWrite(req),
+          }));
+        }
+
+        return json({ error: "not found" }, 404);
       }
 
       return json({ error: "not found" }, 404);

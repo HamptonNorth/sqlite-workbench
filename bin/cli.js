@@ -6,7 +6,7 @@
 
 import { parseArgs } from "node:util";
 import { statSync, accessSync, constants } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, basename } from "node:path";
 import { openSqlite } from "../src/server/sqlite.js";
 import { openSidecar } from "../src/server/sidecar.js";
 import { startServer } from "../src/server/server.js";
@@ -96,16 +96,6 @@ try {
   die(`error: could not open database: ${e.message}`);
 }
 
-if (!sqlite.isWal) {
-  console.warn(
-    `⚠  ${dbPath}\n` +
-      `   Journal mode is "${sqlite.journalMode || "unknown"}", not WAL. This tool is a second\n` +
-      `   process writing a file the host app also writes, and SQLite is single-writer, so\n` +
-      `   concurrent access will be contentious. Re-run with --set-wal to switch (persistent,\n` +
-      `   explicit opt-in). Not flipping it for you.\n`
-  );
-}
-
 // Audit trail and saved snippets live in the sidecar file
 // (<db>.workbench.sqlite), never in the target schema unless --snippets-in-db is
 // given. Lazy: no sidecar file appears until the first thing needs recording.
@@ -116,13 +106,37 @@ const server = startServer({
   store: sidecar,
 });
 
-const shownHost = host === "0.0.0.0" ? "0.0.0.0 (all interfaces)" : host;
-console.log(
-  `sqlite-workbench → http://${host}:${server.port}  ` +
-    `[${values.write ? "read/write" : "read-only"}${host === "0.0.0.0" ? ", EXPOSED" : ""}]`
-);
-console.log(`  db: ${dbPath}`);
-console.log(`  bound: ${shownHost}`);
+// ---- friendly startup banner ----
+let tableCount = null;
+try { tableCount = sqlite.listTables().length; } catch { /* leave unknown */ }
+
+const dbName = basename(dbPath);
+const tablesNote = tableCount == null ? "" : `  (${tableCount} ${tableCount === 1 ? "table" : "tables"})`;
+const mode = values.write ? "read / write  (editing enabled)" : "read-only  (use --write to enable editing)";
+// 0.0.0.0 isn't clickable/browsable; point the user at localhost but flag it.
+const browseHost = host === "0.0.0.0" ? "localhost" : host;
+const url = `http://${browseHost}:${server.port}`;
+
+console.log("");
+console.log(`  sqlite-workbench`);
+console.log("");
+console.log(`  ✓ Connected to ${dbName}${tablesNote}`);
+console.log(`    ${dbPath}`);
+console.log("");
+console.log(`  Mode   ${mode}`);
+console.log(`  Open   ${url}   ← open this in your browser`);
+if (host === "0.0.0.0") {
+  console.log(`  Note   ⚠ exposed on ALL interfaces (0.0.0.0) — reachable from other machines`);
+}
+if (!sqlite.isWal) {
+  console.log("");
+  console.log(`  ⚠ Journal mode is "${sqlite.journalMode || "unknown"}", not WAL. As a second process`);
+  console.log(`    writing this file, concurrent access with the host app will be contentious.`);
+  console.log(`    Re-run with --set-wal to switch (persistent, explicit opt-in).`);
+}
+console.log("");
+console.log(`  Press Ctrl+C to stop.`);
+console.log("");
 
 function shutdown() {
   try { server.stop(); } catch { /* ignore */ }

@@ -111,6 +111,8 @@ class SqlWorkbench extends LitElement {
     _notice:   { state: true },
     _busy:     { state: true },
     _canWrite: { state: true },
+    _databases:{ state: true },   // { current, local[], projects[] } | null
+    _projectInfo: { state: true },// a remote project shown in the "how to" modal | null
   };
 
   constructor() {
@@ -140,12 +142,14 @@ class SqlWorkbench extends LitElement {
     this._notice = "";
     this._busy = false;
     this._canWrite = false;
+    this._databases = null;
+    this._projectInfo = null;
   }
 
   async connectedCallback() {
     super.connectedCallback();
     this.base = this.getAttribute("base") || "/api";
-    await Promise.all([this._loadCaps(), this._loadTables(), this._loadSnippets()]);
+    await Promise.all([this._loadCaps(), this._loadTables(), this._loadSnippets(), this._loadDatabases()]);
   }
 
   firstUpdated() {
@@ -204,10 +208,54 @@ class SqlWorkbench extends LitElement {
   }
 
   async _loadSnippets() {
-    // Snippets arrive in a later build slice; a missing endpoint is not an error
-    // worth showing - just an empty list.
     try { this._snippets = (await this._get("/snippets")).snippets ?? []; }
     catch { this._snippets = []; }
+  }
+
+  async _loadDatabases() {
+    try { this._databases = await this._get("/databases"); }
+    catch { this._databases = null; }
+  }
+
+  // The <select> value for the currently-connected database.
+  _connectValue() {
+    const cur = this._databases?.current?.name;
+    const local = this._databases?.local?.some((l) => l.name === cur);
+    return local ? `local:${cur}` : "current";
+  }
+
+  _onConnectChange(e) {
+    const val = e.target.value;
+    if (val === "current") return;
+    if (val.startsWith("project:")) {
+      // Remote projects can't be opened here - show the operator how. Revert the
+      // dropdown to the current database (we didn't switch).
+      const name = val.slice("project:".length);
+      this._projectInfo = this._databases?.projects?.find((p) => p.name === name) ?? null;
+      e.target.value = this._connectValue();
+      return;
+    }
+    if (val.startsWith("local:")) this._connectTo(val.slice("local:".length));
+  }
+
+  // Switch the server to another local database and reload everything for it.
+  async _connectTo(name) {
+    this._error = ""; this._notice = ""; this._busy = true;
+    try {
+      await this._post("/connect", { name });
+      // Schema tabs describe the OLD database - drop them; keep scratch SQL tabs.
+      this._tabs = this._tabs.filter((t) => t.kind === "sql");
+      if (this._tabs.length === 0) this._tabs = [sqlTab()];
+      if (!this._tabs.some((t) => t.id === this._active)) this._active = this._tabs[0].id;
+      this._result = null;
+      await Promise.all([this._loadCaps(), this._loadTables(), this._loadSnippets(), this._loadDatabases()]);
+      this._notice = `Connected to ${name}.`;
+    } catch (e) {
+      this._error = e.message;
+      await this._loadDatabases();   // resync the dropdown to reality
+    } finally {
+      this._busy = false;
+    }
   }
 
   async _openSchema(name) {
@@ -386,6 +434,7 @@ class SqlWorkbench extends LitElement {
         <div class="head">
           <h1>SQL workbench</h1>
           <span class="badge ${this._canWrite ? "rw" : "ro"}">${this._canWrite ? "read / write" : "read-only"}</span>
+          ${this._renderConnect()}
           <span class="spacer"></span>
           <button class="link" title="Download a Markdown document of selected tables' CREATE statements"
             @click=${() => this._openSchemaDoc()}>Document schema</button>
@@ -471,7 +520,61 @@ class SqlWorkbench extends LitElement {
         ${this._renderResult()}
         ${this._renderCellModal()}
         ${this._renderSchemaDoc()}
+        ${this._renderProjectInfo()}
       </section>
+    `;
+  }
+
+  // "Connect to:" — local databases in the data dir, then remote projects. A
+  // local pick switches the connection; a project pick explains the ops flow.
+  _renderConnect() {
+    const dbs = this._databases;
+    if (!dbs) return "";
+    const cur = dbs.current?.name;
+    const curIsLocal = dbs.local?.some((l) => l.name === cur);
+    return html`
+      <label class="connect">Connect to:
+        <select @change=${(e) => this._onConnectChange(e)}>
+          ${curIsLocal ? "" : html`<option value="current" selected>${cur} (current)</option>`}
+          <optgroup label="Local databases">
+            ${(dbs.local ?? []).map(
+              (l) => html`<option value="local:${l.name}" ?selected=${l.name === cur}>${l.name}</option>`
+            )}
+          </optgroup>
+          ${dbs.projects?.length
+            ? html`<optgroup label="Projects (remote)">
+                ${dbs.projects.map((p) => html`<option value="project:${p.name}">${p.name}  ↗</option>`)}
+              </optgroup>`
+            : ""}
+        </select>
+      </label>
+    `;
+  }
+
+  _renderProjectInfo() {
+    const p = this._projectInfo;
+    if (!p) return "";
+    return html`
+      <div class="modal" @click=${() => { this._projectInfo = null; }}>
+        <div class="dialog" @click=${(e) => e.stopPropagation()}>
+          <div class="dhead">
+            <h3>${p.name} — remote project</h3>
+            <span class="spacer"></span>
+            <button class="link" @click=${() => { this._projectInfo = null; }}>Close</button>
+          </div>
+          <div class="dbody">
+            <p class="muted">This database lives on <code>${p.host ?? "?"}</code>${
+              p.remoteDb ? html` at <code>${p.remoteDb}</code>` : ""
+            }. The workbench can't open it directly — use the support scripts, which stop the
+            service, work on a copy locally with guard rails, and put it back.</p>
+            <p class="cmdlabel">Investigate (read-only):</p>
+            <pre class="cmd">bun run scripts/remote.js investigate ${p.name}</pre>
+            <p class="cmdlabel">Edit (stop → download → edit → verify → upload → restart):</p>
+            <pre class="cmd">bun run scripts/remote.js edit ${p.name}</pre>
+            <p class="muted">Full runbook: <code>docs/OPERATIONS.md</code>.</p>
+          </div>
+        </div>
+      </div>
     `;
   }
 
@@ -640,6 +743,13 @@ class SqlWorkbench extends LitElement {
     .link { background: none; border: 0; color: var(--dim); font-size: 14px;
       text-decoration: underline dotted; text-underline-offset: 2px; padding: 0; }
     .link:hover { color: var(--ink); }
+    .connect { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+    .connect select { font: inherit; font-size: 13px; color: var(--ink); padding: 3px 6px;
+      border: 1px solid var(--border-strong); border-radius: 6px; background: #fff; max-width: 22rem; }
+    .connect select:focus { outline: none; border-color: #64748b; }
+    .cmdlabel { margin: 0.6rem 0 0.2rem; font-size: 13px; }
+    .cmd { margin: 0 0 0.2rem; padding: 8px 10px; background: var(--slate); color: #f1f5f9;
+      border-radius: 6px; font-size: 12px; overflow: auto; }
 
     .banner { font-size: 14px; border: 1px solid; border-radius: 6px; padding: 6px 12px; }
     .banner.err { background: #fef2f2; border-color: #fecaca; color: #991b1b; }

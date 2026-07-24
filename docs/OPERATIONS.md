@@ -56,6 +56,11 @@ bun run scripts/remote.js edit aph2 --dry-run
 
 ---
 
+> **In the app:** the workbench header has a **"Connect to:"** dropdown listing
+> the databases in the data dir (switch to any with one click) followed by your
+> registry **projects**. Picking a project can't open it remotely — it pops up
+> the exact `investigate` / `edit` commands below.
+
 ## Investigate (read-only)
 
 ```bash

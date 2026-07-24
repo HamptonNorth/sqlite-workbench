@@ -5,10 +5,25 @@
 // those. No web framework, so a future Node port stays cheap.
 
 import { fileURLToPath } from "node:url";
+import { readdirSync, existsSync, statSync } from "node:fs";
+import { resolve, join, basename, sep } from "node:path";
 import {
   handleTables, handleSchema, handleCheck, handleRun,
   handleListSnippets, handleCreateSnippet, handleUpdateSnippet, handleDeleteSnippet,
 } from "./core.js";
+import { loadProjects } from "./registry.js";
+
+// Connectable databases in the data dir: .db / .sqlite files, minus the
+// workbench's own sidecars. Presentational - path guards on /connect are the
+// real control.
+function listLocalDbs(dataDir) {
+  let files;
+  try { files = readdirSync(dataDir); } catch { return []; }
+  return files
+    .filter((f) => (f.endsWith(".db") || f.endsWith(".sqlite")) && !f.endsWith(".workbench.sqlite"))
+    .sort()
+    .map((f) => ({ name: f, path: join(dataDir, f) }));
+}
 
 const html = String.raw;
 
@@ -120,21 +135,29 @@ async function readJson(req) {
 /**
  * Start the HTTP server.
  * @param {object} opts
- * @param {object} opts.sqlite   handle from openSqlite()
+ * @param {object} opts.connection   { dbPath, sqlite, sidecar, close() } - the
+ *   active connection. Swappable at runtime via POST /connect.
+ * @param {function} opts.makeConnection (dbPath) -> a new connection object.
+ * @param {string} opts.dataDir   directory whose databases the UI may switch to.
  * @param {string} opts.host
  * @param {number} opts.port
  * @param {string} opts.base     API base path (e.g. "/api")
  * @param {object} [opts.policy] { canRead(req), canWrite(req), whoOf(req),
  *   isAdmin(req) } - Slice 6 injects real auth here. Defaults: read allowed
  *   (localhost dev), write follows --write, identity null, not admin.
- * @param {function} [opts.onExecute] audit sink for executed writes.
- * @param {object} [opts.store] the sidecar snippet store (src/server/sidecar.js).
  */
-export function startServer({ sqlite, host, port, base = "/api", policy, onExecute, store } = {}) {
+export function startServer({ connection, makeConnection, dataDir, host, port, base = "/api", policy } = {}) {
+  // The active connection - mutable so the UI can switch databases. Handlers
+  // read `conn.sqlite` / `conn.sidecar` fresh on each request.
+  let conn = connection;
+  const dataDirResolved = resolve(dataDir);
+
   const canRead = policy?.canRead ?? (() => true);
-  const canWrite = policy?.canWrite ?? (() => sqlite.canWrite);
+  const canWrite = policy?.canWrite ?? (() => conn.sqlite.canWrite);
   const whoOf = policy?.whoOf ?? (() => null);
   const isAdmin = policy?.isAdmin ?? (() => false);
+
+  const currentDb = () => ({ name: basename(conn.dbPath), path: conn.dbPath });
 
   const server = Bun.serve({
     hostname: host,
@@ -149,45 +172,87 @@ export function startServer({ sqlite, host, port, base = "/api", policy, onExecu
         const route = pathname.slice(base.length); // e.g. "/tables", "/schema/users"
 
         if (route === "/health") {
-          return json({ ok: true, tables: sqlite.listTables().length, wal: sqlite.isWal });
+          return json({ ok: true, tables: conn.sqlite.listTables().length, wal: conn.sqlite.isWal });
         }
 
         // Ungated: the UI reads this before anything to show the right badge and
         // enable/disable the write path. It's a capability flag, not data.
         if (route === "/capabilities") {
           const w = canWrite(req);
-          return json({ base, canWrite: w, readOnly: !w });
+          return json({ base, canWrite: w, readOnly: !w, database: currentDb() });
         }
 
         if (!canRead(req)) return json({ error: "forbidden" }, 403);
 
+        // What can we connect to: the current db, local databases in the data
+        // dir, and remote projects from the registry (open-by-explanation only).
+        if (method === "GET" && route === "/databases") {
+          return json({
+            current: currentDb(),
+            dataDir: dataDirResolved,
+            local: listLocalDbs(dataDirResolved),
+            projects: loadProjects(),
+          });
+        }
+
+        // Switch the active connection to a database in the data dir. Restricted
+        // to the data dir with a hard path check - the UI can't point us at
+        // arbitrary files on disk.
+        if (method === "POST" && route === "/connect") {
+          const { name } = await readJson(req);
+          const safe = String(name ?? "");
+          if (!safe || safe.includes("/") || safe.includes("\\") || safe.includes("..")) {
+            return json({ error: "bad database name" }, 400);
+          }
+          if (safe.endsWith(".workbench.sqlite")) {
+            return json({ error: "that's a workbench sidecar, not a database" }, 400);
+          }
+          const target = resolve(join(dataDirResolved, safe));
+          if (target !== join(dataDirResolved, safe) || !target.startsWith(dataDirResolved + sep)) {
+            return json({ error: "outside the data directory" }, 400);
+          }
+          if (!existsSync(target) || !statSync(target).isFile()) {
+            return json({ error: "no such database" }, 404);
+          }
+          try {
+            const next = makeConnection(target);
+            const prev = conn;
+            conn = next;
+            prev.close();
+            return json({ ok: true, database: currentDb(), canWrite: conn.sqlite.canWrite });
+          } catch (e) {
+            return json({ error: `could not open database: ${e.message}` }, 500);
+          }
+        }
+
         if (method === "GET" && route === "/tables") {
-          return send(handleTables(sqlite));
+          return send(handleTables(conn.sqlite));
         }
 
         if (method === "GET" && route.startsWith("/schema/")) {
           const name = decodeURIComponent(route.slice("/schema/".length));
-          return send(handleSchema(sqlite, name));
+          return send(handleSchema(conn.sqlite, name));
         }
 
         if (method === "POST" && route === "/check") {
           const { sql } = await readJson(req);
-          return send(handleCheck(sqlite, sql));
+          return send(handleCheck(conn.sqlite, sql));
         }
 
         if (method === "POST" && route === "/run") {
           const body = await readJson(req);
-          return send(handleRun(sqlite, {
+          return send(handleRun(conn.sqlite, {
             sql: body.sql,
             commit: body.commit === true,
             canWrite: canWrite(req),
             who: whoOf(req),
-            onExecute,
+            onExecute: conn.sidecar.appendAudit,
           }));
         }
 
         // ---- snippets (sidecar store) ----
-        if (store) {
+        {
+          const store = conn.sidecar;
           if (method === "GET" && route === "/snippets") {
             return send(handleListSnippets(store));
           }
@@ -219,7 +284,7 @@ export function startServer({ sqlite, host, port, base = "/api", policy, onExecu
           // Fall back to the plain server-rendered page so the tool is still
           // usable (list of tables) even if the bundle can't be built.
           if (pathname === "/" || pathname === "/index.html") {
-            return new Response(landingPage({ sqlite }), {
+            return new Response(landingPage({ sqlite: conn.sqlite }), {
               headers: { "content-type": "text/html; charset=utf-8" },
             });
           }

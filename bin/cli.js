@@ -6,7 +6,7 @@
 
 import { parseArgs } from "node:util";
 import { statSync, accessSync, constants } from "node:fs";
-import { resolve, basename } from "node:path";
+import { resolve, basename, dirname } from "node:path";
 import { openSqlite } from "../src/server/sqlite.js";
 import { openSidecar } from "../src/server/sidecar.js";
 import { startServer } from "../src/server/server.js";
@@ -20,6 +20,7 @@ Options:
   --port <n>           port to listen on (default: 9999)
   --host <addr>        address to bind (default: 127.0.0.1; use 0.0.0.0 to expose)
   --base <path>        API base path (default: /api)
+  --data-dir <path>    databases the UI may switch to (default: the DB's folder)
   --set-wal            switch the DB to WAL journal mode (explicit opt-in)
   --snippets-in-db     store saved snippets in the target DB instead of a sidecar
   -h, --help           show this help
@@ -44,6 +45,7 @@ try {
       port: { type: "string" },
       host: { type: "string" },
       base: { type: "string" },
+      "data-dir": { type: "string" },
       "set-wal": { type: "boolean", default: false },
       "snippets-in-db": { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -84,27 +86,36 @@ const port = values.port ? Number(values.port) : 9999;
 if (!Number.isInteger(port) || port < 1 || port > 65535) die(`error: invalid --port: ${values.port}`);
 const host = values.host || "127.0.0.1";
 const base = values.base || "/api";
+// Databases the UI may switch to. Default: the folder of the DB we opened (which
+// is ./data in the standard dev workflow), so sibling databases are one click away.
+const dataDir = values["data-dir"] ? resolve(values["data-dir"]) : dirname(dbPath);
 
-let sqlite;
+// A connection bundles the SQLite handles + the sidecar (audit + snippets) for
+// one database. The server can swap it at runtime (POST /connect) to switch DBs.
+// Audit/snippets live in <db>.workbench.sqlite, never the target schema (unless
+// --snippets-in-db). Lazy: no sidecar file appears until first write/snippet.
+function makeConnection(p) {
+  const cp = resolve(p);
+  return {
+    dbPath: cp,
+    sqlite: openSqlite({ dbPath: cp, write: values.write, setWal: values["set-wal"] }),
+    sidecar: openSidecar(cp, { snippetsInDb: values["snippets-in-db"] }),
+    close() {
+      try { this.sqlite.close(); } catch { /* ignore */ }
+      try { this.sidecar.close(); } catch { /* ignore */ }
+    },
+  };
+}
+
+let connection;
 try {
-  sqlite = openSqlite({
-    dbPath,
-    write: values.write,
-    setWal: values["set-wal"],
-  });
+  connection = makeConnection(dbPath);
 } catch (e) {
   die(`error: could not open database: ${e.message}`);
 }
+const sqlite = connection.sqlite; // for the banner below
 
-// Audit trail and saved snippets live in the sidecar file
-// (<db>.workbench.sqlite), never in the target schema unless --snippets-in-db is
-// given. Lazy: no sidecar file appears until the first thing needs recording.
-const sidecar = openSidecar(dbPath, { snippetsInDb: values["snippets-in-db"] });
-const server = startServer({
-  sqlite, host, port, base,
-  onExecute: sidecar.appendAudit,
-  store: sidecar,
-});
+const server = startServer({ connection, makeConnection, dataDir, host, port, base });
 
 // ---- friendly startup banner ----
 let tableCount = null;
@@ -140,8 +151,7 @@ console.log("");
 
 function shutdown() {
   try { server.stop(); } catch { /* ignore */ }
-  try { sqlite.close(); } catch { /* ignore */ }
-  try { sidecar.close(); } catch { /* ignore */ }
+  try { connection.close(); } catch { /* ignore */ }
   process.exit(0);
 }
 process.on("SIGINT", shutdown);

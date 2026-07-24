@@ -620,7 +620,7 @@ class SqlWorkbench extends LitElement {
       <p class="cmdlabel">${label}:</p>
       ${this._cmdBlock(cmd)}
       <button class="scripttoggle" @click=${() => this._toggleScript(action)}>
-        ${open ? "▾" : "▸"} ${open ? "Hide" : "View"} the exact script this runs
+        ${open ? "▾ Hide script" : "▸ Show script"}
       </button>
       ${open
         ? script == null
@@ -944,7 +944,7 @@ class SqlWorkbench extends LitElement {
     .dialog { background: #fff; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.25);
       width: 100%; max-width: 28rem; max-height: 75vh; display: flex; flex-direction: column; }
     .dialog.wide { max-width: 48rem; max-height: 70vh; }
-    .dialog.project { max-width: 44rem; }
+    .dialog.project { max-width: 66rem; }
     .dhead { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); padding: 8px 12px; }
     .dhead h3 { font-size: 14px; font-weight: 500; margin: 0; }
     .dbody { padding: 8px 12px 0; }

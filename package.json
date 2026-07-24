@@ -1,0 +1,17 @@
+{
+  "name": "sqlite-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone browser SQL workbench for a SQLite file. Read-only by default; opt-in editing with guard rails.",
+  "bin": {
+    "sqlite-workbench": "bin/cli.js"
+  },
+  "scripts": {
+    "start": "bun run bin/cli.js",
+    "test": "bun test test/"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}

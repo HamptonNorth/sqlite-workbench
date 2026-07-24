@@ -1,0 +1,27 @@
+# dependencies
+node_modules/
+
+# logs
+*.log
+
+# SQLite databases (target DBs, sidecars, snapshots) — never commit data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+sql-snapshots/
+
+# build output
+dist/
+client/dist/
+
+# env / secrets
+.env
+.env.*
+
+# editor / OS
+.DS_Store
+.vscode/
+.idea/

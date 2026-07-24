@@ -132,7 +132,7 @@ if (!sqlite.isWal) {
   console.log("");
   console.log(`  ⚠ Journal mode is "${sqlite.journalMode || "unknown"}", not WAL. As a second process`);
   console.log(`    writing this file, concurrent access with the host app will be contentious.`);
-  console.log(`    Re-run with --set-wal to switch (persistent, explicit opt-in).`);
+  console.log(`    Run once with --set-wal to switch — it's persistent, so you won't be asked again.`);
 }
 console.log("");
 console.log(`  Press Ctrl+C to stop.`);

@@ -1,9 +1,10 @@
 {
   "name": "sqlite-workbench",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Standalone browser SQL workbench for a SQLite file. Read-only by default; opt-in editing with guard rails.",
+  "license": "MIT",
   "bin": {
     "sqlite-workbench": "bin/cli.js"
   },

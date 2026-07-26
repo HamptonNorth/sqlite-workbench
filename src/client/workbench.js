@@ -1,6 +1,5 @@
-// <sqlite-workbench> — the whole UI. Ported from the reference (aph2-diary
-// client/src/components/sql-workbench.js) with three deliberate changes for the
-// standalone tool:
+// <sqlite-workbench> — the whole UI. Ported from a reference implementation with
+// three deliberate changes for the standalone tool:
 //
 //   1. SHADOW DOM + self-contained styles (below). The reference rendered into
 //      the light DOM so the host app's Tailwind cascaded in; a standalone tool
@@ -21,15 +20,21 @@
 import { LitElement, html, css } from "lit";
 
 // Result cells longer than this are truncated with an ellipsis; click for the
-// full value. Keeps every result row exactly one line high.
+// full value. Keeps every result row exactly one line high. The Wrap toggle
+// above the grid turns truncation off and lets long values (descriptions,
+// addresses, JSON) wrap over several lines instead.
 const MAX_CELL = 40;
+
+// Width a wrapped column is held to, so one long value can't push every other
+// column off the screen.
+const WRAP_COL_WIDTH = "42ch";
 
 // LIMIT put into the SELECT when you browse a table from the ↳ link. Well under
 // the server's 1000-row cap, so a browse shows a complete result.
 const BROWSE_LIMIT = 500;
 
 // Shell-quote an argument so a copied command works even when a project name has
-// spaces or parens (e.g. "aph2 test (nuc2023)"). Mirrors scripts/remote.js.
+// spaces or parens (e.g. "prod db (eu-west)"). Mirrors scripts/remote.js.
 function shQuote(a) {
   const s = String(a);
   return /[^A-Za-z0-9_@%+=:,./-]/.test(s) ? `'${s.replace(/'/g, "'\\''")}'` : s;
@@ -110,6 +115,7 @@ class SqlWorkbench extends LitElement {
     _active:   { state: true },
     _result:   { state: true },
     _cellView: { state: true },
+    _wrapCells: { state: true },
     _docTables:{ state: true },
     _docBusy:  { state: true },
     _topH:     { state: true },
@@ -122,6 +128,7 @@ class SqlWorkbench extends LitElement {
     _projectInfo: { state: true },// a remote project shown in the "how to" modal | null
     _scripts:  { state: true },   // { investigate?, edit? } cached full scripts
     _scriptOpen:{ state: true },  // { investigate?:bool, edit?:bool }
+    _version:  { state: true },   // server version string, for the header
   };
 
   constructor() {
@@ -144,6 +151,7 @@ class SqlWorkbench extends LitElement {
 
     this._result = null;
     this._cellView = null;
+    this._wrapCells = !!saved?.wrapCells;
     this._docTables = null;
     this._docBusy = false;
     this._availH = 0;
@@ -155,6 +163,7 @@ class SqlWorkbench extends LitElement {
     this._projectInfo = null;
     this._scripts = {};
     this._scriptOpen = {};
+    this._version = "";
   }
 
   async connectedCallback() {
@@ -181,6 +190,7 @@ class SqlWorkbench extends LitElement {
     try {
       sessionStorage.setItem(STORE_KEY, JSON.stringify({
         tabs: this._tabs, active: this._active, topH: this._topH,
+        wrapCells: this._wrapCells,
       }));
     } catch { /* quota / private mode - losing scratch state isn't fatal */ }
   }
@@ -209,8 +219,11 @@ class SqlWorkbench extends LitElement {
 
   // ---- data -----------------------------------------------------------------
   async _loadCaps() {
-    try { this._canWrite = !!(await this._get("/capabilities")).canWrite; }
-    catch { this._canWrite = false; }
+    try {
+      const caps = await this._get("/capabilities");
+      this._canWrite = !!caps.canWrite;
+      this._version = caps.version ?? "";
+    } catch { this._canWrite = false; }
   }
 
   async _loadTables() {
@@ -446,6 +459,7 @@ class SqlWorkbench extends LitElement {
       <section class="wb" style=${this._availH ? `height:${this._availH}px` : ""}>
         <div class="head">
           <h1>SQL workbench</h1>
+          ${this._version ? html`<span class="version" title="sqlite-workbench version">v${this._version}</span>` : ""}
           <span class="badge ${this._canWrite ? "rw" : "ro"}">${this._canWrite ? "read / write" : "read-only"}</span>
           ${this._renderConnect()}
           <span class="spacer"></span>
@@ -721,9 +735,16 @@ class SqlWorkbench extends LitElement {
     if (!r.rows.length) return html`<p class="muted norows">No rows. (${r.ms}ms)</p>`;
     return html`
       <div class="resultwrap">
-        <p class="resultmeta">${r.rowCount} row(s) · ${r.ms}ms${r.capped ? ` · showing first ${r.maxRows}` : ""}</p>
+        <p class="resultmeta">
+          ${r.rowCount} row(s) · ${r.ms}ms${r.capped ? ` · showing first ${r.maxRows}` : ""}
+          <label class="wraptoggle" title="Wrap long values over several lines instead of truncating them">
+            <input type="checkbox" .checked=${this._wrapCells}
+              @change=${(e) => { this._wrapCells = e.target.checked; this._persist(); }} />
+            Wrap
+          </label>
+        </p>
         <div class="grid">
-          <table class="results">
+          <table class="results ${this._wrapCells ? "wrapped" : ""}">
             <thead>
               <tr>${r.columns.map((c) => html`<th>${c}</th>`)}</tr>
             </thead>
@@ -739,6 +760,9 @@ class SqlWorkbench extends LitElement {
   _cell(column, value) {
     if (value === null || value === undefined) return html`<td class="null">null</td>`;
     const s = String(value);
+    // Wrap mode shows the whole value over as many lines as it needs, so there is
+    // nothing to truncate and no click-through needed.
+    if (this._wrapCells) return html`<td class="wrap">${s}</td>`;
     if (s.length <= MAX_CELL) return html`<td>${s}</td>`;
     return html`
       <td>
@@ -826,6 +850,7 @@ class SqlWorkbench extends LitElement {
 
     .head { display: flex; align-items: baseline; gap: 12px; }
     .head h1 { font-size: 18px; font-weight: 600; margin: 0; }
+    .version { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; align-self: center; }
     .badge { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid; }
     .badge.ro { background: #f3f4f6; color: var(--muted); border-color: var(--border-strong); }
     .badge.rw { background: var(--amber-bg); color: var(--amber-ink); border-color: var(--amber-border); }
@@ -952,6 +977,14 @@ class SqlWorkbench extends LitElement {
     table.results td.null { color: #9ca3af; font-style: italic; }
     .cellmore { background: none; border: 0; padding: 0; color: var(--slate); text-align: left;
       text-decoration: underline dotted; text-underline-offset: 2px; }
+    /* Wrap mode: let long values run onto several lines, but cap the column so one
+       description can't push the rest of the row off screen. */
+    table.results.wrapped { white-space: normal; }
+    table.results td.wrap { white-space: pre-wrap; overflow-wrap: anywhere;
+      max-width: ${WRAP_COL_WIDTH}; vertical-align: top; }
+    .wraptoggle { display: inline-flex; align-items: center; gap: 4px; margin-left: 10px;
+      cursor: pointer; user-select: none; }
+    .wraptoggle input { margin: 0; cursor: pointer; }
 
     .modal { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.4);
       display: flex; align-items: center; justify-content: center; padding: 24px; }

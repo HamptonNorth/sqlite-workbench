@@ -30,11 +30,11 @@ cp projects.example.json projects.json      # projects.json is git-ignored
 ```jsonc
 {
   "projects": {
-    "aph2": {
-      "host":     "rcollins@aph-server",         // anything ssh accepts
-      "remoteDb": "/srv/aph2/db/aph2.sqlite",     // path on the server
-      "stop":     "sudo systemctl stop aph2-diary",
-      "start":    "sudo systemctl start aph2-diary",
+    "myapp": {
+      "host":     "user@server.example.com",         // anything ssh accepts
+      "remoteDb": "/srv/myapp/db/app.sqlite",     // path on the server
+      "stop":     "sudo systemctl stop myapp",
+      "start":    "sudo systemctl start myapp",
       "port":     9999                            // local workbench port (optional)
     }
   }
@@ -63,17 +63,17 @@ for those units, or run as a user that can manage the service.
 **Trust nothing you haven't read.** Two ways to see exactly what will run:
 
 ```bash
-bun run scripts/remote.js edit aph2 --dry-run    # prints the plan, runs nothing
-bun run scripts/remote.js edit aph2 --script     # prints a runnable bash script
+bun run scripts/remote.js edit myapp --dry-run    # prints the plan, runs nothing
+bun run scripts/remote.js edit myapp --script     # prints a runnable bash script
 ```
 
 `--script` emits a self-contained, commented script with your project's real
 values — review it, or save and run it yourself instead of trusting the tool:
 
 ```bash
-bun run scripts/remote.js edit aph2 --script > edit-aph2.sh
-less edit-aph2.sh        # read every line
-bash edit-aph2.sh        # ...then run it by hand
+bun run scripts/remote.js edit myapp --script > edit-myapp.sh
+less edit-myapp.sh        # read every line
+bash edit-myapp.sh        # ...then run it by hand
 ```
 
 The same script is viewable in the app: the project modal's **"View the exact
@@ -89,11 +89,11 @@ script this runs"** expander shows it with a copy button.
 ## Investigate (read-only)
 
 ```bash
-bun run scripts/remote.js investigate aph2
+bun run scripts/remote.js investigate myapp
 ```
 
 What it does:
-1. `scp` the database down to `data/aph2-investigate-<timestamp>.sqlite`.
+1. `scp` the database down to `data/myapp-investigate-<timestamp>.sqlite`.
 2. Opens the workbench **read-only** on that copy.
 
 The copy is a point-in-time snapshot and may lag the last few writes — fine for
@@ -111,7 +111,7 @@ nothing installed remotely and is usually enough.
 ## Edit (the guarded flow)
 
 ```bash
-bun run scripts/remote.js edit aph2
+bun run scripts/remote.js edit myapp
 ```
 
 Steps (each printed; destructive ones ask to confirm — `--yes` skips prompts):
@@ -119,7 +119,7 @@ Steps (each printed; destructive ones ask to confirm — `--yes` skips prompts):
 1. **Stop the service** (`stop` from the registry).
 2. **Fingerprint** the remote DB (`sha256sum`) — the guard for step 8.
 3. **Back up the remote original** → `…/app.sqlite.bak-<timestamp>` on the server.
-4. **Download** → `data/aph2-edit-<timestamp>.sqlite`.
+4. **Download** → `data/myapp-edit-<timestamp>.sqlite`.
 5. **Open the workbench `--write`** on the copy. Edit in the browser — dry-run to
    see the row count, then Commit (a snapshot is taken before each commit). When
    finished, come back to the terminal and **press Enter** to continue.
@@ -140,7 +140,7 @@ per-commit snapshots under `data/sql-snapshots/`.
   manually if needed (`ssh host '<start>'`); the pre-edit backup from step 3 is
   there too.
 - **After a bad upload**: restore the backup and restart —
-  `ssh host 'cp -p /srv/aph2/db/aph2.sqlite.bak-<ts> /srv/aph2/db/aph2.sqlite && <start>'`.
+  `ssh host 'cp -p /srv/myapp/db/app.sqlite.bak-<ts> /srv/myapp/db/app.sqlite && <start>'`.
 - Prune old `.bak-*` files on the server periodically.
 
 ---
@@ -150,17 +150,17 @@ per-commit snapshots under `data/sql-snapshots/`.
 The scripts encode exactly this; run it yourself if you prefer.
 
 ```bash
-DB=/srv/aph2/db/aph2.sqlite ; H=rcollins@aph-server ; TS=$(date +%Y%m%dT%H%M%S)
-ssh $H "sudo systemctl stop aph2-diary"
+DB=/srv/myapp/db/app.sqlite ; H=user@server.example.com ; TS=$(date +%Y%m%dT%H%M%S)
+ssh $H "sudo systemctl stop myapp"
 ssh $H "sha256sum $DB"                       # note this
 ssh $H "cp -p $DB $DB.bak-$TS"               # backup
-scp $H:$DB ./data/aph2-$TS.sqlite            # download
-bun run bin/cli.js ./data/aph2-$TS.sqlite --write   # edit, then Ctrl+C
-bun -e 'import{Database}from"bun:sqlite";const d=new Database(process.argv[1],{readonly:true});console.log(d.query("PRAGMA integrity_check").get())' ./data/aph2-$TS.sqlite
+scp $H:$DB ./data/myapp-$TS.sqlite            # download
+bun run bin/cli.js ./data/myapp-$TS.sqlite --write   # edit, then Ctrl+C
+bun -e 'import{Database}from"bun:sqlite";const d=new Database(process.argv[1],{readonly:true});console.log(d.query("PRAGMA integrity_check").get())' ./data/myapp-$TS.sqlite
 ssh $H "sha256sum $DB"                       # must match the earlier one
 ssh $H "rm -f $DB-wal $DB-shm"               # drop stale WAL sidecars
-scp ./data/aph2-$TS.sqlite $H:$DB            # upload
-ssh $H "sudo systemctl start aph2-diary"
+scp ./data/myapp-$TS.sqlite $H:$DB            # upload
+ssh $H "sudo systemctl start myapp"
 ```
 
 ---

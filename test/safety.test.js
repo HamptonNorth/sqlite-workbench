@@ -1,5 +1,5 @@
-// The safety tests. Ported from the reference (aph2-diary tests/tier2/sql.test.js)
-// and rewritten to exercise the standalone core handlers directly - no HTTP, no
+// The safety tests. Ported from a reference implementation and rewritten to
+// exercise the standalone core handlers directly - no HTTP, no
 // auth stack. These are the definition of done for the core: the read-only
 // CONNECTION is the boundary, and the disguised-write-rejected test proves the
 // sniffer is not what's protecting the database.

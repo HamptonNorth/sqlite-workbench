@@ -13,6 +13,7 @@ import {
 } from "./core.js";
 import { loadProjects, getProject } from "./registry.js";
 import { projectScript } from "./opsplan.js";
+import { VERSION } from "./version.js";
 
 // Connectable databases in the data dir: .db / .sqlite files, minus the
 // workbench's own sidecars. Presentational - path guards on /connect are the
@@ -173,14 +174,14 @@ export function startServer({ connection, makeConnection, dataDir, host, port, b
         const route = pathname.slice(base.length); // e.g. "/tables", "/schema/users"
 
         if (route === "/health") {
-          return json({ ok: true, tables: conn.sqlite.listTables().length, wal: conn.sqlite.isWal });
+          return json({ ok: true, version: VERSION, tables: conn.sqlite.listTables().length, wal: conn.sqlite.isWal });
         }
 
         // Ungated: the UI reads this before anything to show the right badge and
         // enable/disable the write path. It's a capability flag, not data.
         if (route === "/capabilities") {
           const w = canWrite(req);
-          return json({ base, canWrite: w, readOnly: !w, database: currentDb() });
+          return json({ base, version: VERSION, canWrite: w, readOnly: !w, database: currentDb() });
         }
 
         if (!canRead(req)) return json({ error: "forbidden" }, 403);

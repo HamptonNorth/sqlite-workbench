@@ -10,6 +10,7 @@ import { resolve, basename, dirname } from "node:path";
 import { openSqlite } from "../src/server/sqlite.js";
 import { openSidecar } from "../src/server/sidecar.js";
 import { startServer } from "../src/server/server.js";
+import { VERSION } from "../src/server/version.js";
 
 const USAGE = `sqlite-workbench <db.sqlite> [options]
 
@@ -23,6 +24,7 @@ Options:
   --data-dir <path>    databases the UI may switch to (default: the DB's folder)
   --set-wal            switch the DB to WAL journal mode (explicit opt-in)
   --snippets-in-db     store saved snippets in the target DB instead of a sidecar
+  -v, --version        show version and exit
   -h, --help           show this help
 
 Examples:
@@ -48,6 +50,7 @@ try {
       "data-dir": { type: "string" },
       "set-wal": { type: "boolean", default: false },
       "snippets-in-db": { type: "boolean", default: false },
+      version: { type: "boolean", short: "v", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
   });
@@ -56,6 +59,11 @@ try {
 }
 
 const { values, positionals } = parsed;
+
+if (values.version) {
+  console.log(`sqlite-workbench ${VERSION}`);
+  process.exit(0);
+}
 
 if (values.help) {
   console.log(USAGE);
@@ -129,7 +137,7 @@ const browseHost = host === "0.0.0.0" ? "localhost" : host;
 const url = `http://${browseHost}:${server.port}`;
 
 console.log("");
-console.log(`  sqlite-workbench`);
+console.log(`  sqlite-workbench  v${VERSION}`);
 console.log("");
 console.log(`  ✓ Connected to ${dbName}${tablesNote}`);
 console.log(`    ${dbPath}`);

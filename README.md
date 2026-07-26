@@ -167,3 +167,7 @@ docs/OPERATIONS.md    # the remote-support runbook
 
 Runtime is Bun-only for now (single `src/server/sqlite.js` adapter keeps a future
 Node port isolated).
+
+## License
+
+[MIT](LICENSE).

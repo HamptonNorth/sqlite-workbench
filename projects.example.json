@@ -4,18 +4,18 @@
   "//2": "Resolution order: $SWB_PROJECTS, then ./projects.json, then ~/.config/sqlite-workbench/projects.json.",
 
   "projects": {
-    "aph2": {
-      "host": "rcollins@aph-server",
-      "remoteDb": "/srv/aph2/db/aph2.sqlite",
-      "stop": "sudo systemctl stop aph2-diary",
-      "start": "sudo systemctl start aph2-diary",
+    "myapp": {
+      "host": "user@server.example.com",
+      "remoteDb": "/srv/myapp/db/app.sqlite",
+      "stop": "sudo systemctl stop myapp",
+      "start": "sudo systemctl start myapp",
       "port": 9999
     },
-    "another-app": {
-      "host": "deploy@192.168.1.50",
-      "remoteDb": "/var/lib/another-app/data.sqlite",
-      "stop": "sudo systemctl stop another-app",
-      "start": "sudo systemctl start another-app",
+    "billing": {
+      "host": "deploy@billing.example.com",
+      "remoteDb": "/opt/billing/data.sqlite",
+      "stop": "sudo systemctl stop billing",
+      "start": "sudo systemctl start billing",
       "port": 9998,
       "//sudo": "Set sudo:true when the DB is owned by a service account (e.g. under /opt or /var/lib) and your ssh user can read but not overwrite it. The file ops (backup/replace) then run via sudo, preserving the file's owner/permissions.",
       "sudo": true

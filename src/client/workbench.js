@@ -17,7 +17,7 @@
 //     default outcome of a mistake is "nothing happened, here's what it would
 //     have changed".
 
-import { LitElement, html, css } from "lit";
+import { LitElement, html, css, unsafeCSS } from "lit";
 
 // Result cells longer than this are truncated with an ellipsis; click for the
 // full value. Keeps every result row exactly one line high. The Wrap toggle
@@ -981,7 +981,7 @@ class SqlWorkbench extends LitElement {
        description can't push the rest of the row off screen. */
     table.results.wrapped { white-space: normal; }
     table.results td.wrap { white-space: pre-wrap; overflow-wrap: anywhere;
-      max-width: ${WRAP_COL_WIDTH}; vertical-align: top; }
+      max-width: ${unsafeCSS(WRAP_COL_WIDTH)}; vertical-align: top; }
     .wraptoggle { display: inline-flex; align-items: center; gap: 4px; margin-left: 10px;
       cursor: pointer; user-select: none; }
     .wraptoggle input { margin: 0; cursor: pointer; }

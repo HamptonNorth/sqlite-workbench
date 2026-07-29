@@ -19,11 +19,12 @@
 
 import { LitElement, html, css, unsafeCSS } from "lit";
 
-// Result cells longer than this are truncated with an ellipsis; click for the
-// full value. Keeps every result row exactly one line high. The Wrap toggle
-// above the grid turns truncation off and lets long values (descriptions,
-// addresses, JSON) wrap over several lines instead.
-const MAX_CELL = 40;
+// Result cells are shown in full up to this length; only longer values are cut
+// with an ellipsis, click for the rest. Most values (names, codes, prices, dates)
+// fit comfortably, so the grid stays one line per row without hiding much. The
+// Wrap toggle above the grid drops the limit entirely and lets long values
+// (descriptions, addresses, JSON) run over several lines instead.
+const MAX_CELL = 100;
 
 // Width a wrapped column is held to, so one long value can't push every other
 // column off the screen.
@@ -97,13 +98,22 @@ const schemaTab = (schema)   => ({ id: ++tabSeq, name: schema.name, kind: "schem
 // query can hold personal data, and sessionStorage is wiped when the tab closes,
 // so working SQL doesn't outlive the session on a shared machine. Results are
 // deliberately not persisted (re-runnable, can be 1000 rows).
+//
+// The server can opt out of that default with --persist-tabs, which mirrors the
+// same state into the database's sidecar so it survives a browser restart. Note
+// localStorage would NOT do here: it is keyed by origin, i.e. including the
+// port, and the workbench takes whatever port is free - open on 10000 instead of
+// 9999 and the tabs are gone. The sidecar follows the database instead.
 const STORE_KEY = "sqlite-workbench.tabs";
+const SAVE_DEBOUNCE_MS = 750;
+
+function validTabState(s) {
+  return s && Array.isArray(s.tabs) && s.tabs.length > 0 ? s : null;
+}
 
 function loadTabState() {
   try {
-    const s = JSON.parse(sessionStorage.getItem(STORE_KEY) || "null");
-    if (!s || !Array.isArray(s.tabs) || s.tabs.length === 0) return null;
-    return s;
+    return validTabState(JSON.parse(sessionStorage.getItem(STORE_KEY) || "null"));
   } catch { return null; }
 }
 
@@ -138,6 +148,9 @@ class SqlWorkbench extends LitElement {
     this._snippets = [];
 
     const saved = loadTabState();
+    this._hadSessionTabs = !!saved;
+    this._persistTabs = false;   // set from /capabilities
+    this._saveTimer = null;
     if (saved) {
       this._tabs = saved.tabs;
       tabSeq = Math.max(0, ...saved.tabs.map((t) => Number(t.id) || 0));
@@ -176,23 +189,78 @@ class SqlWorkbench extends LitElement {
     this._measure();
     this._onResize = () => this._measure();
     window.addEventListener("resize", this._onResize);
+    // Closing the browser tab doesn't reliably run disconnectedCallback, and a
+    // debounced save in flight would be lost. pagehide is the one that fires.
+    this._onHide = () => this._flushTabState();
+    window.addEventListener("pagehide", this._onHide);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     if (this._onResize) window.removeEventListener("resize", this._onResize);
+    if (this._onHide) window.removeEventListener("pagehide", this._onHide);
     this._persist();
+    this._flushTabState();
+  }
+
+  // Write pending tab state now, past the debounce. keepalive so the request
+  // outlives the page; sessionStorage has already been written synchronously.
+  _flushTabState() {
+    if (!this._persistTabs) return;
+    clearTimeout(this._saveTimer);
+    this._saveTimer = null;
+    try {
+      fetch(`${this.base}/tab-state`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ state: this._tabState() }),
+        keepalive: true,
+      });
+    } catch { /* nothing more we can do at unload */ }
   }
 
   updated() { this._persist(); }
 
+  _tabState() {
+    return { tabs: this._tabs, active: this._active, topH: this._topH, wrapCells: this._wrapCells };
+  }
+
   _persist() {
+    const state = this._tabState();
     try {
-      sessionStorage.setItem(STORE_KEY, JSON.stringify({
-        tabs: this._tabs, active: this._active, topH: this._topH,
-        wrapCells: this._wrapCells,
-      }));
+      sessionStorage.setItem(STORE_KEY, JSON.stringify(state));
     } catch { /* quota / private mode - losing scratch state isn't fatal */ }
+
+    // Mirror to the sidecar when the server allows it. Debounced: _persist runs
+    // on every Lit update, i.e. on every keystroke in the editor.
+    if (!this._persistTabs) return;
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => this._saveTabState(state), SAVE_DEBOUNCE_MS);
+  }
+
+  async _saveTabState(state) {
+    try {
+      await fetch(`${this.base}/tab-state`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ state }),
+      });
+    } catch { /* the session still works from sessionStorage */ }
+  }
+
+  // Restore from the sidecar. Only when sessionStorage had nothing - a live
+  // session's own tabs are newer than anything on disk, and must not be
+  // clobbered by a slower fetch landing after the constructor.
+  async _restoreTabs() {
+    if (!this._persistTabs || this._hadSessionTabs) return;
+    let saved = null;
+    try { saved = validTabState((await this._get("/tab-state")).state); } catch { return; }
+    if (!saved) return;
+    this._tabs = saved.tabs;
+    tabSeq = Math.max(tabSeq, ...saved.tabs.map((t) => Number(t.id) || 0));
+    this._active = saved.tabs.some((t) => t.id === saved.active) ? saved.active : saved.tabs[0].id;
+    this._topH = Number(saved.topH) || this._topH;
+    this._wrapCells = !!saved.wrapCells;
   }
 
   _measure() {
@@ -223,7 +291,9 @@ class SqlWorkbench extends LitElement {
       const caps = await this._get("/capabilities");
       this._canWrite = !!caps.canWrite;
       this._version = caps.version ?? "";
+      this._persistTabs = !!caps.persistTabs;
     } catch { this._canWrite = false; }
+    await this._restoreTabs();
   }
 
   async _loadTables() {
@@ -737,10 +807,12 @@ class SqlWorkbench extends LitElement {
       <div class="resultwrap">
         <p class="resultmeta">
           ${r.rowCount} row(s) · ${r.ms}ms${r.capped ? ` · showing first ${r.maxRows}` : ""}
-          <label class="wraptoggle" title="Wrap long values over several lines instead of truncating them">
+          <label class="wraptoggle"
+            title="Off: values longer than ${MAX_CELL} characters are shortened, click one to see it in full.
+On: long values wrap over several lines instead.">
             <input type="checkbox" .checked=${this._wrapCells}
               @change=${(e) => { this._wrapCells = e.target.checked; this._persist(); }} />
-            Wrap
+            Wrap long values <span class="hint">(off: first ${MAX_CELL} chars)</span>
           </label>
         </p>
         <div class="grid">
@@ -985,6 +1057,7 @@ class SqlWorkbench extends LitElement {
     .wraptoggle { display: inline-flex; align-items: center; gap: 4px; margin-left: 10px;
       cursor: pointer; user-select: none; }
     .wraptoggle input { margin: 0; cursor: pointer; }
+    .wraptoggle .hint { color: #9ca3af; }
 
     .modal { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.4);
       display: flex; align-items: center; justify-content: center; padding: 24px; }

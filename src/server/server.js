@@ -148,7 +148,7 @@ async function readJson(req) {
  *   isAdmin(req) } - Slice 6 injects real auth here. Defaults: read allowed
  *   (localhost dev), write follows --write, identity null, not admin.
  */
-export function startServer({ connection, makeConnection, dataDir, host, port, base = "/api", policy } = {}) {
+export function startServer({ connection, makeConnection, dataDir, host, port, base = "/api", policy, persistTabs = false } = {}) {
   // The active connection - mutable so the UI can switch databases. Handlers
   // read `conn.sqlite` / `conn.sidecar` fresh on each request.
   let conn = connection;
@@ -181,7 +181,7 @@ export function startServer({ connection, makeConnection, dataDir, host, port, b
         // enable/disable the write path. It's a capability flag, not data.
         if (route === "/capabilities") {
           const w = canWrite(req);
-          return json({ base, version: VERSION, canWrite: w, readOnly: !w, database: currentDb() });
+          return json({ base, version: VERSION, canWrite: w, readOnly: !w, database: currentDb(), persistTabs });
         }
 
         if (!canRead(req)) return json({ error: "forbidden" }, 403);
@@ -279,6 +279,26 @@ export function startServer({ connection, makeConnection, dataDir, host, port, b
             if (method === "DELETE") return send(handleDeleteSnippet(store, id, auth));
             const body = await readJson(req);
             return send(handleUpdateSnippet(store, id, { name: body.name, sql: body.sql }, auth));
+          }
+
+          // ---- open-tab state (opt-in: --persist-tabs) ----
+          // Working SQL written to disk is a privacy decision, so the route is
+          // 404 unless the operator asked for it. Tab state follows the DATABASE
+          // (it lives in that database's sidecar), not the browser origin - the
+          // workbench picks whatever port is free, so origin-keyed storage loses
+          // the tabs the moment it opens on 10000 instead of 9999.
+          if (route === "/tab-state") {
+            if (!persistTabs) return json({ error: "tab persistence is disabled (use --persist-tabs)" }, 404);
+            if (method === "GET") {
+              const raw = store.getUiState("tabs");
+              return json({ state: raw ? JSON.parse(raw) : null });
+            }
+            if (method === "PUT") {
+              const body = await readJson(req);
+              if (body?.state == null) store.clearUiState("tabs");
+              else store.setUiState("tabs", JSON.stringify(body.state));
+              return json({ ok: true });
+            }
           }
         }
 

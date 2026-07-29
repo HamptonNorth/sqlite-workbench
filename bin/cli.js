@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { statSync, accessSync, constants } from "node:fs";
 import { resolve, basename, dirname } from "node:path";
 import { openSqlite } from "../src/server/sqlite.js";
-import { openSidecar } from "../src/server/sidecar.js";
+import { openSidecar, migrateLegacySidecar, sidecarPath } from "../src/server/sidecar.js";
 import { startServer } from "../src/server/server.js";
 import { VERSION } from "../src/server/version.js";
 
@@ -24,6 +24,9 @@ Options:
   --data-dir <path>    databases the UI may switch to (default: the DB's folder)
   --set-wal            switch the DB to WAL journal mode (explicit opt-in)
   --snippets-in-db     store saved snippets in the target DB instead of a sidecar
+  --persist-tabs       keep open tabs and their SQL across browser restarts, in
+                       the sidecar (default: tabs live in sessionStorage and are
+                       discarded when the browser tab closes)
   -v, --version        show version and exit
   -h, --help           show this help
 
@@ -50,6 +53,7 @@ try {
       "data-dir": { type: "string" },
       "set-wal": { type: "boolean", default: false },
       "snippets-in-db": { type: "boolean", default: false },
+      "persist-tabs": { type: "boolean", default: false },
       version: { type: "boolean", short: "v", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -100,10 +104,12 @@ const dataDir = values["data-dir"] ? resolve(values["data-dir"]) : dirname(dbPat
 
 // A connection bundles the SQLite handles + the sidecar (audit + snippets) for
 // one database. The server can swap it at runtime (POST /connect) to switch DBs.
-// Audit/snippets live in <db>.workbench.sqlite, never the target schema (unless
+// Audit/snippets live in .workbench/<db>.sqlite, never the target schema (unless
 // --snippets-in-db). Lazy: no sidecar file appears until first write/snippet.
 function makeConnection(p) {
   const cp = resolve(p);
+  const moved = migrateLegacySidecar(cp);
+  if (moved) console.log(`[workbench] moved sidecar out of the db-name glob: ${moved} -> ${sidecarPath(cp)}`);
   return {
     dbPath: cp,
     sqlite: openSqlite({ dbPath: cp, write: values.write, setWal: values["set-wal"] }),
@@ -123,7 +129,8 @@ try {
 }
 const sqlite = connection.sqlite; // for the banner below
 
-const server = startServer({ connection, makeConnection, dataDir, host, port, base });
+const server = startServer({ connection, makeConnection, dataDir, host, port, base,
+  persistTabs: values["persist-tabs"] });
 
 // ---- friendly startup banner ----
 let tableCount = null;

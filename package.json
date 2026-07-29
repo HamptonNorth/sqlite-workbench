@@ -19,5 +19,8 @@
   "dependencies": {
     "lit": "^3.3.3",
     "sql-formatter": "^15.8.2"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.11.1"
   }
 }

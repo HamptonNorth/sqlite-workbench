@@ -62,6 +62,33 @@ export function handleTables(sqlite) {
   return { status: 200, body: { tables: sqlite.listTables() } };
 }
 
+// ---- GET /columns ----
+// Every visible table/view mapped to its column names, in one query, for the
+// editor's autocomplete. Deliberately just names: the client needs enough to
+// suggest `p.<column>`, not the full schema (that's /schema/:table).
+export function handleColumns(sqlite) {
+  const ro = sqlite.readonlyDb();
+  // pragma_table_info as a table-valued function - one round trip instead of a
+  // PRAGMA per table. A view whose source table is missing simply yields no rows.
+  const rows = ro
+    .query(`
+      SELECT m.name AS tbl, p.name AS col
+      FROM sqlite_master m JOIN pragma_table_info(m.name) p
+      WHERE m.type IN ('table','view') AND m.name NOT LIKE 'sqlite_%'
+      ORDER BY m.name, p.cid
+    `)
+    .all();
+  // Keep the same visibility rules as the sidebar, so autocomplete never offers
+  // a table the user can't see listed.
+  const visible = new Set(sqlite.listTables().map((t) => t.name));
+  const tables = {};
+  for (const { tbl, col } of rows) {
+    if (!visible.has(tbl)) continue;
+    (tables[tbl] ??= []).push(col);
+  }
+  return { status: 200, body: { tables } };
+}
+
 // ---- GET /schema/:table ----
 export function handleSchema(sqlite, name) {
   const ro = sqlite.readonlyDb();

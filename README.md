@@ -94,6 +94,11 @@ Options:
   drag-to-resize splitter, results grid.
 - **Format** (via `sql-formatter`), **Check** (parse-only), **Run**, and — for a
   write — **Run and Commit Change** (the two-step commit).
+- **Schema-aware autocomplete**: type `p.` and get the columns of whatever `p`
+  aliases in the `FROM`/`JOIN` clause (it reads aliases wherever they appear, so
+  it works before you've finished the query); a bare word suggests table names
+  and the columns of tables already in scope. `Ctrl+Space` asks explicitly,
+  `↑`/`↓` choose, `Enter`/`Tab` accept (`Ctrl+Z` undoes), `Esc` dismisses.
 - Results grid: both-axis scroll, single-line rows, long cells truncated with a
   click-for-full-value modal, zebra striping, CSV / text export.
 - Read-only **schema tabs** (columns, indexes, FKs, `CREATE` statement).

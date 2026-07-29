@@ -18,6 +18,7 @@
 //     have changed".
 
 import { LitElement, html, css, unsafeCSS } from "lit";
+import { completionsFor } from "./complete.js";
 
 // Result cells are shown in full up to this length; only longer values are cut
 // with an ellipsis, click for the rest. Most values (names, codes, prices, dates)
@@ -139,6 +140,8 @@ class SqlWorkbench extends LitElement {
     _scripts:  { state: true },   // { investigate?, edit? } cached full scripts
     _scriptOpen:{ state: true },  // { investigate?:bool, edit?:bool }
     _version:  { state: true },   // server version string, for the header
+    _schema:   { state: true },   // { table: [column, ...] } for autocomplete
+    _ac:       { state: true },   // open completion popup: { items, index, prefix, left, top } | null
   };
 
   constructor() {
@@ -177,12 +180,14 @@ class SqlWorkbench extends LitElement {
     this._scripts = {};
     this._scriptOpen = {};
     this._version = "";
+    this._schema = {};
+    this._ac = null;
   }
 
   async connectedCallback() {
     super.connectedCallback();
     this.base = this.getAttribute("base") || "/api";
-    await Promise.all([this._loadCaps(), this._loadTables(), this._loadSnippets(), this._loadDatabases()]);
+    await Promise.all([this._loadCaps(), this._loadTables(), this._loadSnippets(), this._loadDatabases(), this._loadColumns()]);
   }
 
   firstUpdated() {
@@ -306,6 +311,13 @@ class SqlWorkbench extends LitElement {
     catch { this._snippets = []; }
   }
 
+  // Table -> columns, for editor autocomplete. Fetched once per connection;
+  // failing is not worth an error banner, you just get no suggestions.
+  async _loadColumns() {
+    try { this._schema = (await this._get("/columns")).tables ?? {}; }
+    catch { this._schema = {}; }
+  }
+
   async _loadDatabases() {
     try { this._databases = await this._get("/databases"); }
     catch { this._databases = null; }
@@ -344,7 +356,7 @@ class SqlWorkbench extends LitElement {
       if (this._tabs.length === 0) this._tabs = [sqlTab()];
       if (!this._tabs.some((t) => t.id === this._active)) this._active = this._tabs[0].id;
       this._result = null;
-      await Promise.all([this._loadCaps(), this._loadTables(), this._loadSnippets(), this._loadDatabases()]);
+      await Promise.all([this._loadCaps(), this._loadTables(), this._loadSnippets(), this._loadDatabases(), this._loadColumns()]);
       this._notice = `Connected to ${name}.`;
     } catch (e) {
       this._error = e.message;
@@ -401,6 +413,116 @@ class SqlWorkbench extends LitElement {
     document.body.style.userSelect = "none";
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+  }
+
+  // ---- autocomplete ---------------------------------------------------------
+  // Schema-aware completion over the plain <textarea>: type `p.` and get the
+  // columns of whatever `p` aliases. The matching logic is in complete.js; this
+  // is only the popup - where to put it, and the keys that drive it.
+
+  // A textarea gives no caret coordinates, so render the text up to the caret
+  // into a hidden mirror with identical metrics and measure a marker there.
+  _caretPoint(ta) {
+    const mirror = this.renderRoot?.querySelector(".acmirror");
+    if (!mirror) return { left: 0, top: 0 };
+    const s = getComputedStyle(ta);
+    for (const p of [
+      "fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing", "lineHeight",
+      "textIndent", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+      "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "tabSize",
+    ]) mirror.style[p] = s[p];
+    // Same content width => same line wrapping => the marker lands where the
+    // real caret is. clientWidth excludes border and any scrollbar.
+    mirror.style.boxSizing = "border-box";
+    mirror.style.width = `${ta.clientWidth + parseFloat(s.borderLeftWidth || 0) + parseFloat(s.borderRightWidth || 0)}px`;
+
+    mirror.textContent = ta.value.slice(0, ta.selectionStart);
+    const marker = document.createElement("span");
+    marker.textContent = "​";
+    mirror.appendChild(marker);
+
+    const rect = ta.getBoundingClientRect();
+    const lineHeight = parseFloat(s.lineHeight) || parseFloat(s.fontSize) * 1.3;
+    // offsetLeft/Top are measured from the mirror's padding edge, i.e. inside
+    // its border - so add the textarea's border back on.
+    const left = rect.left + parseFloat(s.borderLeftWidth || 0) + marker.offsetLeft - ta.scrollLeft;
+    const top = rect.top + parseFloat(s.borderTopWidth || 0) + marker.offsetTop - ta.scrollTop + lineHeight;
+    mirror.textContent = "";   // don't leave a copy of the query in the DOM
+    return { left, top };
+  }
+
+  _updateCompletions({ force = false } = {}) {
+    const ta = this.renderRoot?.querySelector("textarea.sql");
+    // Never over a selection: replacing a range is not what completion means.
+    if (!ta || !this._isSql || ta.selectionStart !== ta.selectionEnd) return this._acClose();
+    const r = completionsFor({
+      sql: ta.value, caret: ta.selectionStart, schema: this._schema, force,
+    });
+    if (!r) return this._acClose();
+    const { left, top } = this._caretPoint(ta);
+    this._ac = { items: r.items, index: 0, prefix: r.prefix, left, top };
+  }
+
+  _acClose() { if (this._ac) this._ac = null; }
+
+  _acAccept(item) {
+    const ta = this.renderRoot?.querySelector("textarea.sql");
+    if (!ta || !this._ac) return;
+    const caret = ta.selectionStart;
+    const start = caret - this._ac.prefix.length;
+    ta.focus();
+    ta.setSelectionRange(start, caret);
+    // insertText keeps the browser's native undo stack intact (Ctrl+Z undoes the
+    // completion) and fires `input`, which syncs the tab - same trick as Format.
+    const inserted = typeof document.execCommand === "function" &&
+      document.execCommand("insertText", false, item.value);
+    if (!inserted) {
+      ta.value = ta.value.slice(0, start) + item.value + ta.value.slice(caret);
+      const end = start + item.value.length;
+      ta.setSelectionRange(end, end);
+      this._patchTab({ sql: ta.value });
+    }
+    this._acClose();
+  }
+
+  _acKeydown(e) {
+    // Ctrl+Space asks for suggestions where typing alone wouldn't offer them.
+    if (e.code === "Space" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      this._updateCompletions({ force: true });
+      return;
+    }
+    if (!this._ac) return;
+    const n = this._ac.items.length;
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault(); this._ac = { ...this._ac, index: (this._ac.index + 1) % n }; break;
+      case "ArrowUp":
+        e.preventDefault(); this._ac = { ...this._ac, index: (this._ac.index - 1 + n) % n }; break;
+      case "Enter": case "Tab":
+        e.preventDefault(); this._acAccept(this._ac.items[this._ac.index]); break;
+      case "Escape":
+        e.preventDefault(); this._acClose(); break;
+      // Any other caret move invalidates the position the list was built for.
+      case "ArrowLeft": case "ArrowRight": case "Home": case "End":
+      case "PageUp": case "PageDown":
+        this._acClose(); break;
+    }
+  }
+
+  _renderAc() {
+    const ac = this._ac;
+    if (!ac) return "";
+    return html`
+      <div class="acpop" style="left:${Math.round(ac.left)}px; top:${Math.round(ac.top)}px"
+        @mousedown=${(e) => e.preventDefault()}>
+        ${ac.items.map((it, i) => html`
+          <div class="acitem ${i === ac.index ? "on" : ""}" @click=${() => this._acAccept(it)}>
+            <span class="acname">${it.value}</span>
+            <span class="acdetail">${it.detail}</span>
+          </div>`)}
+      </div>
+    `;
   }
 
   // ---- run ------------------------------------------------------------------
@@ -587,7 +709,13 @@ class SqlWorkbench extends LitElement {
                 <textarea class="sql" spellcheck="false"
                   placeholder="One statement per run, e.g.  SELECT * FROM users LIMIT 20;"
                   .value=${tab.sql}
-                  @input=${(e) => this._patchTab({ sql: e.target.value })}></textarea>
+                  @input=${(e) => { this._patchTab({ sql: e.target.value }); this._updateCompletions(); }}
+                  @keydown=${(e) => this._acKeydown(e)}
+                  @blur=${() => this._acClose()}
+                  @click=${() => this._acClose()}
+                  @scroll=${() => this._acClose()}></textarea>
+                <!-- caret measuring mirror for the completion popup; never visible -->
+                <div class="acmirror" aria-hidden="true"></div>
               `}
           </div>
         </div>
@@ -615,6 +743,7 @@ class SqlWorkbench extends LitElement {
         </div>
 
         ${this._renderResult()}
+        ${this._renderAc()}
         ${this._renderCellModal()}
         ${this._renderSchemaDoc()}
         ${this._renderProjectInfo()}
@@ -1001,6 +1130,22 @@ On: long values wrap over several lines instead.">
     textarea.sql { flex: 1; min-height: 0; resize: none; width: 100%;
       border: 1px solid var(--border-strong); border-radius: 6px; padding: 6px 8px; font-size: 13px; }
     textarea.sql:focus { outline: none; border-color: #64748b; }
+
+    /* Hidden twin of the textarea, used only to locate the caret. Must wrap
+       exactly as the textarea does, so it shares its metrics (set in JS). */
+    .acmirror { position: absolute; visibility: hidden; pointer-events: none;
+      top: 0; left: 0; z-index: -1; white-space: pre-wrap; overflow-wrap: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .acpop { position: fixed; z-index: 60; background: #fff; border: 1px solid var(--border-strong);
+      border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.16); padding: 3px;
+      min-width: 12rem; max-width: 26rem; max-height: 15rem; overflow-y: auto; }
+    .acitem { display: flex; align-items: baseline; gap: 10px; padding: 3px 8px;
+      border-radius: 4px; font-size: 12px; cursor: pointer;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .acitem.on { background: var(--slate); color: #fff; }
+    .acname { flex: 1; white-space: nowrap; }
+    .acdetail { font-size: 10px; opacity: .55; white-space: nowrap;
+      font-family: ui-sans-serif, system-ui, sans-serif; }
 
     .schemaview { border: 1px solid var(--indigo-border); border-radius: 0 0 6px 6px; flex: 1;
       min-height: 0; overflow: auto; padding: 8px; background: rgba(238,242,255,.4); }

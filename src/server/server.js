@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { readdirSync, existsSync, statSync } from "node:fs";
 import { resolve, join, basename, sep } from "node:path";
 import {
-  handleTables, handleSchema, handleCheck, handleRun,
+  handleTables, handleColumns, handleSchema, handleCheck, handleRun,
   handleListSnippets, handleCreateSnippet, handleUpdateSnippet, handleDeleteSnippet,
 } from "./core.js";
 import { loadProjects, getProject } from "./registry.js";
@@ -239,6 +239,10 @@ export function startServer({ connection, makeConnection, dataDir, host, port, b
 
         if (method === "GET" && route === "/tables") {
           return send(handleTables(conn.sqlite));
+        }
+
+        if (method === "GET" && route === "/columns") {
+          return send(handleColumns(conn.sqlite));
         }
 
         if (method === "GET" && route.startsWith("/schema/")) {
